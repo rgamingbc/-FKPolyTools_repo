@@ -96,8 +96,12 @@ export class WalletService {
     winRate: number;
     smartScore: number;
   }> {
-    // 获取活动记录（尽量多获取以便计算）
-    const activities = await this.dataApi.getActivity(address, { limit: 500 });
+    // 根据时间段决定获取多少条记录
+    // 24h: 500条足够, 7d: 1000条, 30d: 3000条, all: 5000条
+    const maxRecords = periodDays === 0 ? 5000 : periodDays <= 1 ? 500 : periodDays <= 7 ? 1000 : 3000;
+
+    // 使用分页获取完整活动记录
+    const activities = await this.dataApi.getAllActivity(address, maxRecords, 'TRADE');
 
     // 按时间过滤
     const now = Date.now();
@@ -118,7 +122,7 @@ export class WalletService {
     const pnl = sellValue - buyValue;
 
     // 胜率估算 (卖出价 > 买入均价的比例)
-    const winRate = trades.length > 0 ? Math.min(0.9, 0.5 + (pnl / volume) * 0.5) : 0.5;
+    const winRate = trades.length > 0 ? Math.min(0.9, 0.5 + (pnl / Math.max(1, volume)) * 0.5) : 0.5;
 
     // 评分
     const positions = await this.dataApi.getPositions(address);

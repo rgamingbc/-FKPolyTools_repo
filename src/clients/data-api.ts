@@ -147,7 +147,7 @@ export class DataApiClient {
   constructor(
     private rateLimiter: RateLimiter,
     private cache: UnifiedCache
-  ) {}
+  ) { }
 
   // ===== Wallet-related =====
 
@@ -171,14 +171,20 @@ export class DataApiClient {
 
   /**
    * Get activity for a wallet address
+   * @param address Wallet address
+   * @param params Query parameters
+   * @param params.limit Number of results per page (default: 100)
+   * @param params.offset Offset for pagination (default: 0)
+   * @param params.type Filter by activity type
    */
   async getActivity(
     address: string,
-    params?: { limit?: number; type?: string }
+    params?: { limit?: number; offset?: number; type?: string }
   ): Promise<Activity[]> {
     const query = new URLSearchParams({
       user: address,
       limit: String(params?.limit || 100),
+      ...(params?.offset && { offset: String(params.offset) }),
       ...(params?.type && { type: params.type }),
     });
 
@@ -192,6 +198,40 @@ export class DataApiClient {
       const data = (await response.json()) as unknown[];
       return this.normalizeActivities(data);
     });
+  }
+
+  /**
+   * Get ALL activity for a wallet address with automatic pagination
+   * @param address Wallet address
+   * @param maxRecords Maximum records to fetch (default: 1000)
+   * @param type Filter by activity type (e.g., 'TRADE')
+   */
+  async getAllActivity(
+    address: string,
+    maxRecords = 1000,
+    type?: string
+  ): Promise<Activity[]> {
+    const pageSize = 100;
+    const allActivities: Activity[] = [];
+    let offset = 0;
+
+    while (allActivities.length < maxRecords) {
+      const activities = await this.getActivity(address, {
+        limit: pageSize,
+        offset,
+        type,
+      });
+
+      if (activities.length === 0) break;
+
+      allActivities.push(...activities);
+      offset += pageSize;
+
+      // If we got fewer than pageSize, there's no more data
+      if (activities.length < pageSize) break;
+    }
+
+    return allActivities.slice(0, maxRecords);
   }
 
   // ===== Trade-related =====

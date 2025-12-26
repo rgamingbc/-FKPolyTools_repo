@@ -447,43 +447,28 @@ export async function whaleDiscoveryRoutes(fastify: FastifyInstance): Promise<vo
         const { address } = request.params;
         const period = request.query.period || 'all';
 
-        // "all" 时使用 SDK 获取完整 profile
-        if (period === 'all') {
-            if (!sdk) {
-                sdk = new PolymarketSDK();
-            }
-            try {
-                const profile = await sdk.wallets.getWalletProfile(address);
-                return {
-                    address,
-                    period,
-                    pnl: profile.realizedPnL || 0,
-                    volume: Math.abs(profile.totalPnL) * 10, // 估算
-                    tradeCount: profile.tradeCount || 0,
-                    winRate: profile.avgPercentPnL > 0 ? 0.55 : 0.45,
-                    smartScore: profile.smartScore || 50,
-                };
-            } catch {
-                // SDK 失败，返回默认值
-                return {
-                    address,
-                    period,
-                    pnl: 0,
-                    volume: 0,
-                    tradeCount: 0,
-                    winRate: 0.5,
-                    smartScore: 50,
-                    error: 'Data unavailable',
-                };
-            }
+        if (!sdk) {
+            sdk = new PolymarketSDK();
         }
 
-        // 其他时间段尝试 Data API trades
-        const periodDays = period === '24h' ? 1 : period === '7d' ? 7 : 30;
-        const stats = await getWhaleTradeStats(address, periodDays);
+        // 转换时间段为天数
+        const periodDays = period === '24h' ? 1 : period === '7d' ? 7 : period === '30d' ? 30 : 0;
 
-        // 如果没有数据，返回提示
-        if (stats.tradeCount === 0) {
+        try {
+            // 使用 SDK 的分页方法获取完整交易记录并计算统计
+            const stats = await sdk.wallets.getWalletProfileForPeriod(address, periodDays);
+
+            return {
+                address,
+                period,
+                pnl: stats.pnl,
+                volume: stats.volume,
+                tradeCount: stats.tradeCount,
+                winRate: stats.winRate,
+                smartScore: stats.smartScore,
+            };
+        } catch (error) {
+            console.error(`[WhaleProfile] Error fetching profile for ${address}:`, error);
             return {
                 address,
                 period,
@@ -492,22 +477,9 @@ export async function whaleDiscoveryRoutes(fastify: FastifyInstance): Promise<vo
                 tradeCount: 0,
                 winRate: 0.5,
                 smartScore: 50,
-                noData: true,
-                message: '该时间段无交易数据',
+                error: 'Data unavailable',
             };
         }
-
-        return {
-            address,
-            period,
-            pnl: stats.pnl,
-            volume: stats.volume,
-            tradeCount: stats.tradeCount,
-            buyVolume: stats.buyVolume,
-            sellVolume: stats.sellVolume,
-            winRate: stats.pnl > 0 ? 0.6 : 0.4,
-            smartScore: Math.min(100, Math.max(0, 50 + stats.pnl / 1000)),
-        };
     });
 }
 
