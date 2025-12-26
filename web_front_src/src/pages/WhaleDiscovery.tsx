@@ -66,24 +66,24 @@ function WhaleDiscovery() {
         }
     }, []);
 
-    // 加载时间段数据 - 顺序处理避免 Rate Limit
+    // 加载时间段数据 - 顺序处理避免 Rate Limit，实时更新进度
     const loadPeriodData = useCallback(async (period: '24h' | '7d' | '30d' | 'all', addresses: string[]) => {
         if (addresses.length === 0) return;
 
         setLoadingPeriod(true);
-        const newPeriodData: Record<string, any> = {};
+        // 清空旧数据，准备加载新数据
+        setPeriodData({});
 
-        // 顺序请求，避免 Rate Limit
+        // 顺序请求，每完成一个立即更新显示
         for (const address of addresses) {
             try {
                 const res = await whaleApi.getProfile(address, period);
-                newPeriodData[address] = res.data;
+                setPeriodData(prev => ({ ...prev, [address]: res.data }));
             } catch {
-                newPeriodData[address] = { pnl: 0, volume: 0, tradeCount: 0, winRate: 0, smartScore: 0 };
+                setPeriodData(prev => ({ ...prev, [address]: { pnl: 0, volume: 0, tradeCount: 0, winRate: 0, smartScore: 0 } }));
             }
         }
 
-        setPeriodData(newPeriodData);
         setLoadingPeriod(false);
     }, []);
 
@@ -390,17 +390,20 @@ function WhaleDiscovery() {
                 <Row justify="space-between" align="middle">
                     <Col>已发现鲸鱼 ({whales.length})</Col>
                     <Col>
-                        <Radio.Group
-                            value={timePeriod}
-                            onChange={(e) => setTimePeriod(e.target.value)}
-                            buttonStyle="solid"
-                            size="small"
-                        >
-                            <Radio.Button value="24h">24小时</Radio.Button>
-                            <Radio.Button value="7d">7天</Radio.Button>
-                            <Radio.Button value="30d">30天</Radio.Button>
-                            <Radio.Button value="all">全部</Radio.Button>
-                        </Radio.Group>
+                        <Space>
+                            <Radio.Group
+                                value={timePeriod}
+                                onChange={(e) => setTimePeriod(e.target.value)}
+                                buttonStyle="solid"
+                                size="small"
+                            >
+                                <Radio.Button value="24h">24小时</Radio.Button>
+                                <Radio.Button value="7d">7天</Radio.Button>
+                                <Radio.Button value="30d">30天</Radio.Button>
+                                <Radio.Button value="all">全部</Radio.Button>
+                            </Radio.Group>
+                            {loadingPeriod && <Spin size="small" />}
+                        </Space>
                     </Col>
                 </Row>
             } style={{ background: '#1f1f1f' }} bordered={false}>
