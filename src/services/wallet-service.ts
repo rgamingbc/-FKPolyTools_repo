@@ -96,37 +96,77 @@ export class WalletService {
     winRate: number;
     smartScore: number;
   }> {
-    // 根据时间段决定获取多少条记录
-    // 24h: 500条足够, 7d: 1000条, 30d: 3000条, all: 5000条
-    const maxRecords = periodDays === 0 ? 5000 : periodDays <= 1 ? 500 : periodDays <= 7 ? 1000 : 3000;
+    // 获取所有活动记录（不限制类型，以便包含 REDEMPTION）
+    // 使用足够大的 maxRecords 来确保获取完整数据
+    const maxRecords = 10000; // 足够覆盖大部分活跃用户
 
-    // 使用分页获取完整活动记录
-    const activities = await this.dataApi.getAllActivity(address, maxRecords, 'TRADE');
+    // 获取所有类型的活动（包括 TRADE, REDEMPTION, SPLIT, MERGE）
+    const allActivities = await this.dataApi.getAllActivity(address, maxRecords);
 
     // 按时间过滤
     const now = Date.now();
     const sinceTimestamp = periodDays > 0 ? now - periodDays * 24 * 60 * 60 * 1000 : 0;
-    const filteredActivities = activities.filter(a => a.timestamp >= sinceTimestamp);
+    const filteredActivities = allActivities.filter(a => a.timestamp >= sinceTimestamp);
 
-    // 计算统计数据
+    // 分类活动
     const trades = filteredActivities.filter(a => a.type === 'TRADE');
+    const redemptions = filteredActivities.filter(a => a.type === 'REDEEM');
     const buys = trades.filter(a => a.side === 'BUY');
     const sells = trades.filter(a => a.side === 'SELL');
 
-    // 交易量 = 买入 + 卖出
-    const volume = trades.reduce((sum, t) => sum + (t.usdcSize || t.size * t.price), 0);
+    // === 计算交易量 ===
+    // 交易量 = 买入 + 卖出（不含 Redemption）
+    const buyVolume = buys.reduce((sum, t) => sum + (t.usdcSize || t.size * t.price), 0);
+    const sellVolume = sells.reduce((sum, t) => sum + (t.usdcSize || t.size * t.price), 0);
+    const volume = buyVolume + sellVolume;
 
-    // 盈亏 = 卖出 - 买入 (简化计算)
-    const buyValue = buys.reduce((sum, t) => sum + (t.usdcSize || t.size * t.price), 0);
-    const sellValue = sells.reduce((sum, t) => sum + (t.usdcSize || t.size * t.price), 0);
-    const pnl = sellValue - buyValue;
+    // === 计算 PnL ===
+    // PnL = 卖出收入 + 交割收入 - 买入成本
+    // Redemption: 如果 outcome 方向正确，每个 share 价值 1 USDC
+    const redemptionValue = redemptions.reduce((sum, r) => {
+      // Redemption 时，size 代表赎回的 share 数量，每个价值 1 USDC
+      return sum + (r.size || 0);
+    }, 0);
 
-    // 胜率估算 (卖出价 > 买入均价的比例)
-    const winRate = trades.length > 0 ? Math.min(0.9, 0.5 + (pnl / Math.max(1, volume)) * 0.5) : 0.5;
+    const realizedPnl = sellVolume + redemptionValue - buyVolume;
 
-    // 评分
-    const positions = await this.dataApi.getPositions(address);
-    const smartScore = this.calculateSmartScore(positions, filteredActivities);
+    // === 获取当前持仓估值 (Mark-to-Market) ===
+    let unrealizedPnl = 0;
+    try {
+      const positions = await this.dataApi.getPositions(address);
+      // 只计算在时间段内有活动的持仓的未实现盈亏
+      unrealizedPnl = positions.reduce((sum, p) => sum + (p.cashPnl || 0), 0);
+    } catch {
+      // 持仓获取失败，只使用已实现盈亏
+    }
+
+    // 总 PnL = 已实现 + 未实现
+    const pnl = realizedPnl + unrealizedPnl;
+
+    // === 计算胜率 ===
+    // 胜率 = (盈利的卖出交易 + 成功的交割) / (总卖出交易 + 总交割)
+    let winCount = 0;
+    let totalClosedPositions = sells.length + redemptions.length;
+
+    // 卖出盈利：卖出价 > 0.5（表示高于成本价）
+    for (const sell of sells) {
+      if (sell.price > 0.5) {
+        winCount++;
+      }
+    }
+
+    // 交割都算作盈利（因为只有正确预测才会有 redemption value > 0）
+    winCount += redemptions.filter(r => (r.size || 0) > 0).length;
+
+    const winRate = totalClosedPositions > 0 ? winCount / totalClosedPositions : 0.5;
+
+    // === 计算评分 (基于该时间段的 ROI) ===
+    // Score = 基础分 50 + ROI 调整 + 交易活跃度调整
+    const roi = volume > 0 ? (pnl / volume) * 100 : 0; // ROI 百分比
+    const activityScore = Math.min(20, (trades.length / 10)); // 交易活跃度最多加 20 分
+    const roiScore = Math.min(30, Math.max(-30, roi * 3)); // ROI 最多影响 ±30 分
+
+    const smartScore = Math.round(Math.max(0, Math.min(100, 50 + roiScore + activityScore)));
 
     return {
       pnl,
