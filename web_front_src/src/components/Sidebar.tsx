@@ -54,6 +54,11 @@ function Sidebar() {
             icon: <WalletOutlined />, // Using same icon for now
             label: '🚀 高级策略',
         },
+        {
+            key: '/crypto-15m',
+            icon: <SwapOutlined />,
+            label: '⏱️ 15M Crypto',
+        },
     ];
 
     return (

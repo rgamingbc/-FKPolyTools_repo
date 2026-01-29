@@ -18,6 +18,7 @@ function Crypto15m() {
     const [autoRefresh, setAutoRefresh] = useState(true);
     const [hideRedeemHistory, setHideRedeemHistory] = useState(true);
     const [editing, setEditing] = useState(false);
+    const [pollMs, setPollMs] = useState<number>(1000);
     const [minProb, setMinProb] = useState<number>(0.9);
     const [expiresWithinSec, setExpiresWithinSec] = useState<number>(180);
     const [amountUsd, setAmountUsd] = useState<number>(1);
@@ -51,16 +52,17 @@ function Crypto15m() {
             if (parsed?.minProb != null) setMinProb(Number(parsed.minProb));
             if (parsed?.expiresWithinSec != null) setExpiresWithinSec(Number(parsed.expiresWithinSec));
             if (parsed?.amountUsd != null) setAmountUsd(Number(parsed.amountUsd));
+            if (parsed?.pollMs != null) setPollMs(Number(parsed.pollMs));
         } catch {
         }
     }, []);
 
     useEffect(() => {
         try {
-            localStorage.setItem('crypto15m_settings_v1', JSON.stringify({ minProb, expiresWithinSec, amountUsd }));
+            localStorage.setItem('crypto15m_settings_v1', JSON.stringify({ minProb, expiresWithinSec, amountUsd, pollMs }));
         } catch {
         }
-    }, [minProb, expiresWithinSec, amountUsd]);
+    }, [minProb, expiresWithinSec, amountUsd, pollMs]);
 
     const fetchStatus = async () => {
         const res = await api.get('/group-arb/crypto15m/status');
@@ -70,32 +72,8 @@ function Crypto15m() {
     const fetchCandidates = async () => {
         const res = await api.get('/group-arb/crypto15m/candidates', { params: { minProb, expiresWithinSec, limit: 20 } });
         const list = Array.isArray(res.data?.candidates) ? res.data.candidates : [];
-        setCandidates((prev: any[]) => {
-            const prevById = new Map(prev.map((x) => [String(x?.conditionId), x]));
-            const next = list.map((x: any) => {
-                const id = String(x?.conditionId);
-                const old = prevById.get(id);
-                if (!old) return x;
-                return {
-                    ...old,
-                    prices: x.prices,
-                    chosenIndex: x.chosenIndex,
-                    chosenOutcome: x.chosenOutcome,
-                    chosenPrice: x.chosenPrice,
-                    meetsMinProb: x.meetsMinProb,
-                    eligibleByExpiry: x.eligibleByExpiry,
-                    secondsToExpire: x.secondsToExpire,
-                    endDate: x.endDate,
-                    symbol: x.symbol,
-                };
-            });
-            const newIds = new Set(list.map((x: any) => String(x?.conditionId)));
-            for (const x of prev) {
-                const id = String(x?.conditionId);
-                if (!newIds.has(id)) next.push(x);
-            }
-            return next;
-        });
+        const filtered = list.filter((c: any) => c?.meetsMinProb === true && c?.eligibleByExpiry === true);
+        setCandidates(filtered);
     };
 
     const fetchHistory = async () => {
@@ -125,15 +103,17 @@ function Crypto15m() {
 
     useEffect(() => {
         if (timerRef.current) clearInterval(timerRef.current);
+        const urgent = candidates.some((c: any) => c?.eligibleByExpiry === true);
+        const effectivePollMs = urgent ? Math.min(1000, Math.max(500, Math.floor(pollMs))) : Math.max(500, Math.floor(pollMs));
         timerRef.current = setInterval(() => {
             if (!autoRefresh) return;
             if (editing) return;
             Promise.all([fetchStatus(), fetchCandidates()]).catch(() => {});
-        }, 2000);
+        }, effectivePollMs);
         return () => {
             if (timerRef.current) clearInterval(timerRef.current);
         };
-    }, [autoRefresh, editing, minProb, expiresWithinSec]);
+    }, [autoRefresh, editing, minProb, expiresWithinSec, pollMs, candidates.length]);
 
     useEffect(() => {
         if (timerHistoryRef.current) clearInterval(timerHistoryRef.current);
@@ -150,7 +130,7 @@ function Crypto15m() {
     const onStart = async () => {
         setActionLoading(true);
         try {
-            await api.post('/group-arb/crypto15m/auto/start', { amountUsd, minProb, expiresWithinSec });
+            await api.post('/group-arb/crypto15m/auto/start', { amountUsd, minProb, expiresWithinSec, pollMs });
             await refreshAll();
         } finally {
             setActionLoading(false);
@@ -284,15 +264,7 @@ function Crypto15m() {
                     <span style={{ color: '#ddd' }}>Expire ≤ (sec)</span>
                     <InputNumber min={10} max={300} step={5} value={expiresWithinSec} onChange={(v) => setExpiresWithinSec(Number(v))} />
                     <span style={{ color: '#ddd' }}>Amount ($)</span>
-                    <InputNumber
-                        min={0.5}
-                        max={50}
-                        step={0.5}
-                        value={amountUsd}
-                        onFocus={() => setEditing(true)}
-                        onBlur={() => setEditing(false)}
-                        onChange={(v) => setAmountUsd(Number(v))}
-                    />
+                    <InputNumber min={1} max={1000} step={1} value={amountUsd} onChange={(v) => setAmountUsd(Math.max(1, Math.floor(Number(v))))} />
                     <Button type="primary" icon={<PlayCircleOutlined />} onClick={onStart} loading={actionLoading} disabled={!!status?.enabled}>
                         Start Auto Trade
                     </Button>
@@ -305,6 +277,16 @@ function Crypto15m() {
                     <Button onClick={() => setAutoRefresh((v) => !v)} type={autoRefresh ? 'primary' : 'default'}>
                         {autoRefresh ? 'Auto Refresh: ON' : 'Auto Refresh: OFF'}
                     </Button>
+                    <span style={{ color: '#ddd' }}>Update (ms)</span>
+                    <InputNumber
+                        min={500}
+                        max={5000}
+                        step={250}
+                        value={pollMs}
+                        onFocus={() => setEditing(true)}
+                        onBlur={() => setEditing(false)}
+                        onChange={(v) => setPollMs(Math.max(500, Math.floor(Number(v))))}
+                    />
                     <Button onClick={() => setHideRedeemHistory((v) => !v)} type={hideRedeemHistory ? 'primary' : 'default'}>
                         {hideRedeemHistory ? 'History: Orders' : 'History: All'}
                     </Button>

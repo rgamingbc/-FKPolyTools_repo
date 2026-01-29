@@ -961,7 +961,30 @@ export const groupArbRoutes: FastifyPluginAsync = async (fastify) => {
         }
     });
 
-    fastify.post('/crypto15m/order', {
+    
+    fastify.get('/crypto15m/order-status', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Get crypto15m order status by orderId (debug)',
+            querystring: {
+                type: 'object',
+                required: ['orderId'],
+                properties: {
+                    orderId: { type: 'string' }
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const q = request.query as any;
+                const r = await (scanner as any).debugCrypto15mOrderStatus(String(q.orderId));
+                return r;
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+fastify.post('/crypto15m/order', {
         schema: {
             tags: ['Group Arb'],
             summary: 'Place a single 15m crypto order (semi mode)',

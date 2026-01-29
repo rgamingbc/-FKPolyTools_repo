@@ -664,7 +664,16 @@ export default function Dashboard() {
                                 type="info"
                                 showIcon
                                 message="Last redeem run"
-                                description={`${redeemInfo.last.at} • ok ${redeemInfo.last.ok} • fail ${redeemInfo.last.fail}`}
+                                description={
+                                    <div>
+                                        <div>{`${redeemInfo.last.at} • ok ${redeemInfo.last.ok} • fail ${redeemInfo.last.fail}`}</div>
+                                        {redeemInfo?.drainLast?.cashDelta != null ? (
+                                            <div style={{ marginTop: 4 }}>
+                                                {`Δ cash: ${fmtUsd(redeemInfo.drainLast.cashDelta)} • claimable: ${String(redeemInfo.drainLast.claimableCountBefore ?? '-') } → ${String(redeemInfo.drainLast.claimableCountAfter ?? '-')}`}
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                }
                             />
                         ) : (
                             <div style={{ marginTop: 8, fontSize: 12, color: '#9CA3AF' }}>
