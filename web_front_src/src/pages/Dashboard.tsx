@@ -55,6 +55,18 @@ export default function Dashboard() {
     const [redeemStatus, setRedeemStatus] = useState<any>(null);
     const [autoRedeemEnabled, setAutoRedeemEnabled] = useState(false);
     const [autoRedeemMaxPerCycle, setAutoRedeemMaxPerCycle] = useState(20);
+    const [relayerStatus, setRelayerStatus] = useState<any>(null);
+    const [builderKeys, setBuilderKeys] = useState<any[]>(() => {
+        try {
+            const raw = localStorage.getItem('builder_relayer_keys_v1');
+            const parsed = raw ? JSON.parse(raw) : [];
+            return Array.isArray(parsed) ? parsed : [];
+        } catch {
+            return [];
+        }
+    });
+    const [builderActiveIndex, setBuilderActiveIndex] = useState(0);
+    const [relayerKeyLabel, setRelayerKeyLabel] = useState('');
     const [relayerApiKey, setRelayerApiKey] = useState('');
     const [relayerSecret, setRelayerSecret] = useState('');
     const [relayerPassphrase, setRelayerPassphrase] = useState('');
@@ -161,35 +173,61 @@ export default function Dashboard() {
         }
     };
 
+    const persistLocalBuilderKeys = (keys: any[]) => {
+        try {
+            localStorage.setItem('builder_relayer_keys_v1', JSON.stringify(keys));
+        } catch {
+        }
+    };
+
+    const fetchRelayerStatus = async () => {
+        try {
+            const res = await api.get('/group-arb/relayer/status');
+            const st = res.data?.status || null;
+            setRelayerStatus(st);
+            if (st?.relayerUrl) setRelayerUrl(String(st.relayerUrl));
+            if (st?.activeIndex != null) setBuilderActiveIndex(Number(st.activeIndex));
+        } catch {
+            setRelayerStatus(null);
+        }
+    };
+
     const saveRelayerKeys = async () => {
         setRelayerSaveLoading(true);
         setRelayerSaveError(null);
         setRelayerSaveSuccess(null);
         try {
+            const nextKeys = [
+                ...builderKeys,
+                {
+                    label: relayerKeyLabel || undefined,
+                    apiKey: relayerApiKey,
+                    secret: relayerSecret,
+                    passphrase: relayerPassphrase,
+                },
+            ];
+            const nextActive = nextKeys.length - 1;
             const res = await api.post('/group-arb/relayer/config', {
-                apiKey: relayerApiKey,
-                secret: relayerSecret,
-                passphrase: relayerPassphrase,
+                keys: nextKeys,
+                activeIndex: nextActive,
                 relayerUrl: relayerUrl || undefined,
-                testRedeem: true,
-                testMax: 1,
+                persist: true,
+                testRedeem: false,
             });
-            const test = res.data?.testRedeemResult;
-            const results: any[] = Array.isArray(test?.results) ? test.results : [];
-            const firstFail = results.find((r) => !r?.success);
-            const firstOk = results.find((r) => !!r?.success);
-            if (firstFail) {
-                setRelayerSaveError(String(firstFail?.error || 'Redeem test failed'));
-                return;
-            } else if (firstOk) {
-                setRelayerSaveSuccess(`${String(firstOk?.method || 'relayer')} • ${String(firstOk?.txHash || '').slice(0, 12)}…`);
+            const st = res.data?.status;
+            setBuilderKeys(nextKeys);
+            persistLocalBuilderKeys(nextKeys);
+            if (st?.activeApiKey) {
+                setRelayerSaveSuccess(`Active key: ${String(st.activeApiKey)}`);
             } else {
-                setRelayerSaveSuccess('Relayer saved. No redeemables found for test.');
+                setRelayerSaveSuccess('Relayer keys saved.');
             }
+            setBuilderActiveIndex(nextActive);
             setRelayerApiKey('');
             setRelayerSecret('');
             setRelayerPassphrase('');
-            await Promise.all([fetchRedeemStatus(), fetchHistory(), fetchPortfolio()]);
+            setRelayerKeyLabel('');
+            await Promise.all([fetchRelayerStatus(), fetchRedeemStatus(), fetchHistory(), fetchPortfolio()]);
         } catch (e: any) {
             setRelayerSaveError(e?.response?.data?.error || e?.message || String(e));
         } finally {
@@ -197,8 +235,41 @@ export default function Dashboard() {
         }
     };
 
+    const pushAllRelayerKeys = async (activeIndex?: number) => {
+        setRelayerSaveLoading(true);
+        setRelayerSaveError(null);
+        setRelayerSaveSuccess(null);
+        try {
+            const res = await api.post('/group-arb/relayer/config', {
+                keys: builderKeys,
+                activeIndex: activeIndex != null ? activeIndex : builderActiveIndex,
+                relayerUrl: relayerUrl || undefined,
+                persist: true,
+                testRedeem: false,
+            });
+            setRelayerSaveSuccess(`Saved. Active key: ${String(res.data?.status?.activeApiKey || '-')}`);
+            await fetchRelayerStatus();
+        } catch (e: any) {
+            setRelayerSaveError(e?.response?.data?.error || e?.message || String(e));
+        } finally {
+            setRelayerSaveLoading(false);
+        }
+    };
+
+    const removeRelayerKey = async (index: number) => {
+        const next = builderKeys.filter((_: any, i: number) => i !== index);
+        setBuilderKeys(next);
+        persistLocalBuilderKeys(next);
+        if (builderActiveIndex >= next.length) setBuilderActiveIndex(Math.max(0, next.length - 1));
+        try {
+            await api.post('/group-arb/relayer/config', { keys: next, activeIndex: Math.min(builderActiveIndex, Math.max(0, next.length - 1)), relayerUrl: relayerUrl || undefined, persist: true, testRedeem: false });
+            await fetchRelayerStatus();
+        } catch {
+        }
+    };
+
     const refreshAll = async () => {
-        await Promise.all([fetchPortfolio(), fetchHistory(), fetchOpenOrders(), fetchTrades(), fetchRedeemStatus()]);
+        await Promise.all([fetchPortfolio(), fetchHistory(), fetchOpenOrders(), fetchTrades(), fetchRedeemStatus(), fetchRelayerStatus()]);
         if (pnlMode === 'portfolio') await fetchPnl(range);
         else await fetchCashflow(range);
     };
@@ -210,6 +281,7 @@ export default function Dashboard() {
             fetchOpenOrders();
             fetchTrades();
             fetchRedeemStatus();
+            fetchRelayerStatus();
         }, 15000);
         return () => clearInterval(t);
     }, []);
@@ -438,7 +510,7 @@ export default function Dashboard() {
                         ) : null}
                         <div style={{ marginBottom: 10, padding: 12, border: '1px solid rgba(255,255,255,0.08)', borderRadius: 8 }}>
                             <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 8 }}>
-                                Relayer Setup (Builder credentials). Stored on disk.
+                                Relayer Setup (Builder credentials). Stored on disk. Add multiple keys to avoid daily quota stops.
                             </div>
                             {relayerSaveError ? (
                                 <Alert style={{ marginBottom: 8 }} message="Relayer setup failed" description={relayerSaveError} type="error" showIcon />
@@ -446,7 +518,53 @@ export default function Dashboard() {
                             {relayerSaveSuccess ? (
                                 <Alert style={{ marginBottom: 8 }} message="Relayer configured + redeem test ok" description={relayerSaveSuccess} type="success" showIcon />
                             ) : null}
+                            {relayerStatus?.keys?.length ? (
+                                <div style={{ marginBottom: 10 }}>
+                                    <Table
+                                        size="small"
+                                        pagination={false}
+                                        dataSource={(relayerStatus.keys || []).map((k: any) => ({ ...k, key: k.index }))}
+                                        columns={[
+                                            { title: 'Idx', dataIndex: 'index', key: 'index', width: 60 },
+                                            { title: 'Label', dataIndex: 'label', key: 'label', render: (v: any) => (v ? String(v) : '-') },
+                                            { title: 'API Key', dataIndex: 'apiKey', key: 'apiKey', render: (v: any) => <Tag>{String(v || '')}</Tag> },
+                                            { title: 'Status', key: 'status', render: (_: any, r: any) => (r.exhausted ? <Tag color="orange">EXHAUSTED</Tag> : <Tag color="green">OK</Tag>) },
+                                            { title: 'Reset', dataIndex: 'exhaustedUntil', key: 'exhaustedUntil', render: (v: any) => (v ? new Date(String(v)).toLocaleString() : '-') },
+                                            { title: 'Last Error', dataIndex: 'lastError', key: 'lastError', render: (v: any) => (v ? String(v).slice(0, 80) : '-') },
+                                            {
+                                                title: 'Action',
+                                                key: 'action',
+                                                render: (_: any, r: any) => (
+                                                    <Space size={8}>
+                                                        <Button
+                                                            size="small"
+                                                            type="default"
+                                                            disabled={Number(r.index) === Number(relayerStatus.activeIndex)}
+                                                            onClick={async () => {
+                                                                const idx = Number(r.index);
+                                                                setBuilderActiveIndex(idx);
+                                                                await api.post('/group-arb/relayer/active', { activeIndex: idx, persist: true });
+                                                                await fetchRelayerStatus();
+                                                            }}
+                                                        >
+                                                            Set Active
+                                                        </Button>
+                                                        {Number(r.index) === Number(relayerStatus.activeIndex) ? <Tag color="blue">Active</Tag> : null}
+                                                        <Button size="small" danger onClick={() => removeRelayerKey(Number(r.index))}>Remove</Button>
+                                                    </Space>
+                                                )
+                                            }
+                                        ]}
+                                    />
+                                </div>
+                            ) : null}
                             <Space size={8} wrap>
+                                <Input
+                                    placeholder="Label (optional)"
+                                    value={relayerKeyLabel}
+                                    onChange={(e) => setRelayerKeyLabel(e.target.value)}
+                                    style={{ width: 180 }}
+                                />
                                 <Input.Password
                                     placeholder="Builder API Key"
                                     value={relayerApiKey}
@@ -477,7 +595,14 @@ export default function Dashboard() {
                                     disabled={!relayerApiKey || !relayerSecret || !relayerPassphrase}
                                     onClick={saveRelayerKeys}
                                 >
-                                    Save Relayer Keys
+                                    Add Key
+                                </Button>
+                                <Button
+                                    loading={relayerSaveLoading}
+                                    disabled={!builderKeys.length}
+                                    onClick={() => pushAllRelayerKeys()}
+                                >
+                                    Save All Keys
                                 </Button>
                             </Space>
                         </div>
