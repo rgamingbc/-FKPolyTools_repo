@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Table, Typography, Card, Alert, Button, Tag, Row, Col, Statistic, Modal, InputNumber, message, Descriptions, Switch, Slider, Space } from 'antd';
-import { SyncOutlined, ThunderboltOutlined, SettingOutlined } from '@ant-design/icons';
+import { Table, Typography, Card, Alert, Button, Tag, Row, Col, Statistic, Modal, InputNumber, message, Descriptions, Switch, Space } from 'antd';
+import { SyncOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { arbitrageApi } from '../api/client';
 
 const { Title, Text } = Typography;
@@ -185,9 +185,6 @@ function Arbitrage() {
     ];
 
     const profitableCount = opportunities.filter((o) => o.profitPercent > 0.5).length;
-
-    // Progress Bar Calculation
-    const progressPercent = scanStatus ? Math.floor((scanStatus.progress.current / (scanStatus.progress.total || 1)) * 100) : 0;
 
     return (
         <div>

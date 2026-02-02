@@ -1,10 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Alert, Button, Card, Descriptions, Tag } from 'antd';
-import axios from 'axios';
-
-const api = axios.create({
-    baseURL: 'http://localhost:3000/api',
-});
+import api from '../api/client';
 
 export default function AutoTrade() {
     const [enabled, setEnabled] = useState(() => {

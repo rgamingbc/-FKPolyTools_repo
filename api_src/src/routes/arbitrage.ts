@@ -3,15 +3,11 @@
  */
 
 import { FastifyPluginAsync } from 'fastify';
-import { PolymarketSDK, checkArbitrage, ArbitrageService, ArbitrageMarketConfig, ArbitrageOpportunity, PolymarketError, ErrorCode, withRetry, RateLimiter, ApiType } from '../../../dist/index.js';
+import { PolymarketSDK, checkArbitrage, ArbitrageService, ErrorCode, withRetry, RateLimiter } from '../../../dist/index.js';
+import type { ArbitrageMarketConfig, ArbitrageOpportunity as ServiceArbitrageOpportunity } from '../../../dist/services/arbitrage-service.js';
 import { config } from '../config.js';
 
-// 自定义速率限制器
-const rateLimiter = new RateLimiter({
-  [ApiType.DATA]: { maxConcurrent: 5, minTime: 200 },
-  [ApiType.GAMMA]: { maxConcurrent: 5, minTime: 200 },
-  [ApiType.CLOB]: { maxConcurrent: 2, minTime: 500 },
-});
+const rateLimiter = new RateLimiter();
 
 const sdk = new PolymarketSDK({
     rateLimiter: rateLimiter,
@@ -65,10 +61,7 @@ async function startBackgroundScanner() {
                         // Skip if volume too low (basic filter)
                         if ((market.volume24hr || 0) < 100) return;
 
-                        const orderbook = await withRetry(() => sdk.clobApi.getProcessedOrderbook(market.conditionId), {
-                            maxRetries: 2,
-                            shouldRetry: (err: any) => err?.code === ErrorCode.RATE_LIMITED
-                        });
+                        const orderbook = await withRetry(() => sdk.clobApi.getProcessedOrderbook(market.conditionId), { maxRetries: 2 });
 
                         const arb = checkArbitrage(
                             orderbook.yes.ask,
@@ -230,7 +223,7 @@ export const arbitrageRoutes: FastifyPluginAsync = async (fastify) => {
 
             await arbService.start(arbMarket);
 
-            const arbOpp: ArbitrageOpportunity = {
+            const arbOpp: ServiceArbitrageOpportunity = {
                 type: opportunity.arbType,
                 profitRate: opportunity.profit,
                 profitPercent: opportunity.profitPercent,

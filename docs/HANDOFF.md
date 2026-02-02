@@ -11,6 +11,27 @@
   - 只在 data-api `redeemable=true` 才會觸發 redeem
   - 手動 /redeem/conditions 預設 redeemable=false 會 skip，除非 `force=true`
 
+## 雲端運維（部署 / 備份 / 流程）
+
+雲端保持運作，本機繼續開發；上線用 Git deploy tag（方便回滾），備份只用檔案 tar.gz（不使用 EBS Snapshot）。
+
+文件入口：
+
+    docs/OPS-DEPLOY.md
+    docs/BACKUP-RESTORE.md
+    docs/DEV-WORKFLOW.md
+
+快速健康檢查：
+
+    curl -I http://56.68.6.71/crypto-15m | head
+    curl -sS http://56.68.6.71/api/group-arb/crypto15m/status | head
+    curl -sS http://56.68.6.71/api/group-arb/crypto15m/diag | head
+    curl -sS http://56.68.6.71/api/group-arb/history | head
+
+注意：
+
+    GET /api/group-arb 會 404（沒有根路徑 handler），請使用具體 endpoint。
+
 ## 架構與倉庫定位
 
 ### 後端（策略 + redeem）

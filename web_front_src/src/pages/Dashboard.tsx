@@ -1,14 +1,10 @@
 import { Card, Typography, Row, Col, Table, Tag, Button, Alert, Space, Switch, InputNumber, Tabs, Select, Input } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import axios from 'axios';
 import { createChart } from 'lightweight-charts';
+import api from '../api/client';
 
 const { Title } = Typography;
-
-const api = axios.create({
-    baseURL: 'http://localhost:3000/api',
-});
 
 type Range = '1D' | '1W' | '1M' | 'ALL';
 type PnlMode = 'portfolio' | 'cashflow';
@@ -426,7 +422,7 @@ export default function Dashboard() {
                     </Card>
                 </Col>
                 <Col span={8}>
-                    <Card>
+                    <Card loading={pnlMode === 'portfolio' ? loadingPnl : loadingCashflow}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <div>
                                 <div style={{ fontSize: 12, color: '#9CA3AF' }}>{pnlMode === 'portfolio' ? 'Profit/Loss' : 'Cashflow P/L'}</div>

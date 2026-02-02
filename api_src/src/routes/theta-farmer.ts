@@ -1,14 +1,10 @@
 
 import { FastifyPluginAsync } from 'fastify';
-import { PolymarketSDK, withRetry, RateLimiter, ApiType } from '../../../dist/index.js';
+import { PolymarketSDK, withRetry, RateLimiter } from '../../../dist/index.js';
 import { config } from '../config.js';
 
 export const thetaFarmerRoutes: FastifyPluginAsync = async (fastify) => {
-    const rateLimiter = new RateLimiter({
-        [ApiType.DATA]: { maxConcurrent: 5, minTime: 200 },
-        [ApiType.GAMMA]: { maxConcurrent: 5, minTime: 200 },
-        [ApiType.CLOB]: { maxConcurrent: 2, minTime: 500 },
-    });
+    const rateLimiter = new RateLimiter();
     
     const sdk = new PolymarketSDK({
         rateLimiter,

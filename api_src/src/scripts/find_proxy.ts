@@ -30,7 +30,7 @@ async function main() {
         console.log("Testing auth with Signer as Funder...");
         
         try {
-            const trades = await clientL2.getTrades({ limit: 1 });
+            const trades = await clientL2.getTrades();
             console.log("Trades fetched successfully.");
         } catch (e: any) {
              console.log("❌ Request failed as expected.");

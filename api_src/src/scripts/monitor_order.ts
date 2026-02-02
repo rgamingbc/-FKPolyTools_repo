@@ -8,7 +8,8 @@ async function main() {
     
     while (Date.now() < endTime) {
         try {
-            const res = await axios.get('http://localhost:3000/api/group-arb/history');
+            const http: any = axios as any;
+            const res = await http.get('http://localhost:3001/api/group-arb/history');
             const history = res.data.history || [];
             
             // Find recent order for Toronto

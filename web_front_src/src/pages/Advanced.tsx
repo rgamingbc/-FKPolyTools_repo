@@ -1,13 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
 import { Tabs, Table, Card, Input, Button, Tag, Typography, Modal, InputNumber, Descriptions, Alert, Switch } from 'antd';
 import { RadarChartOutlined, SearchOutlined, ShoppingCartOutlined, PauseCircleOutlined, HistoryOutlined, PlayCircleOutlined, CloudOutlined, ReloadOutlined } from '@ant-design/icons';
-import axios from 'axios';
+import api from '../api/client';
 
 const { Title } = Typography;
-
-const api = axios.create({
-    baseURL: 'http://localhost:3000/api', // Explicitly set backend URL
-});
 const formatTimeWithAgo = (iso: string) => {
     const d = new Date(iso);
     const diffMs = Date.now() - d.getTime();
@@ -144,7 +140,7 @@ function GroupArbTab() {
         if (!selectedOpp) return;
         setPlacingOrder(true);
         try {
-            const res = await api.post('/group-arb/execute-shares', {
+            await api.post('/group-arb/execute-shares', {
                 marketId: selectedOpp.marketId,
                 slug: selectedOpp.slug,
                 question: selectedOpp.question,

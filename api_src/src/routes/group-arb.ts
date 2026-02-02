@@ -692,9 +692,24 @@ export const groupArbRoutes: FastifyPluginAsync = async (fastify) => {
                 const firstFail = results.find(r => !r?.success);
                 const errMsg = firstFail?.error ? String(firstFail.error) : '';
                 if (errMsg.includes('invalid authorization') || errMsg.includes('"status":401') || errMsg.includes('Unauthorized')) {
-                    scanner.clearRelayerConfig({ deleteFile: true });
+                    (scanner as any).rotateRelayerKeyOnAuthError?.(errMsg);
                 }
                 return { success: true, result, status: scanner.getRelayerStatus(), testRedeemResult: test };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.get('/relayer/diag', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Diagnose relayer config sources (paths + parsed key counts)',
+        },
+        handler: async (_request, reply) => {
+            try {
+                const diag = await (scanner as any).getRelayerDiag?.();
+                return { success: true, diag };
             } catch (err: any) {
                 return reply.status(500).send({ error: err.message });
             }
@@ -857,6 +872,49 @@ export const groupArbRoutes: FastifyPluginAsync = async (fastify) => {
         }
     });
 
+    fastify.get('/crypto15m/history', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Get crypto15m strategy history (investor view)',
+            querystring: {
+                type: 'object',
+                properties: {
+                    refresh: { type: 'boolean' },
+                    intervalMs: { type: 'number' },
+                    maxEntries: { type: 'number' }
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const q = request.query as any;
+                const r = await (scanner as any).getCrypto15mHistory({
+                    refresh: String(q.refresh || '') === '1' || String(q.refresh || '') === 'true',
+                    intervalMs: q.intervalMs != null ? Number(q.intervalMs) : undefined,
+                    maxEntries: q.maxEntries != null ? Number(q.maxEntries) : undefined,
+                });
+                return r;
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.get('/crypto15m/diag', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Diagnose crypto15m CLOB connectivity (dns/markets/books)',
+        },
+        handler: async (_request, reply) => {
+            try {
+                const r = await (scanner as any).getCrypto15mDiag();
+                return r;
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
     fastify.get('/crypto15m/candidates', {
         schema: {
             tags: ['Group Arb'],
@@ -900,6 +958,77 @@ export const groupArbRoutes: FastifyPluginAsync = async (fastify) => {
         }
     });
 
+    fastify.get('/crypto15m/delta-thresholds', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Get crypto15m min delta thresholds (BTC/ETH/SOL)',
+        },
+        handler: async (_request, reply) => {
+            try {
+                const thresholds = (scanner as any).getCrypto15mDeltaThresholds();
+                return { success: true, thresholds };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.post('/crypto15m/delta-thresholds', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Update crypto15m min delta thresholds (persisted)',
+            body: {
+                type: 'object',
+                properties: {
+                    btcMinDelta: { type: 'number' },
+                    ethMinDelta: { type: 'number' },
+                    solMinDelta: { type: 'number' },
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const b = (request.body || {}) as any;
+                const thresholds = (scanner as any).setCrypto15mDeltaThresholds({
+                    btcMinDelta: b.btcMinDelta != null ? Number(b.btcMinDelta) : undefined,
+                    ethMinDelta: b.ethMinDelta != null ? Number(b.ethMinDelta) : undefined,
+                    solMinDelta: b.solMinDelta != null ? Number(b.solMinDelta) : undefined,
+                    persist: true,
+                });
+                return { success: true, thresholds };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.get('/crypto15m/ws', {
+        websocket: true,
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Crypto15m realtime snapshot feed (websocket)',
+            querystring: {
+                type: 'object',
+                properties: {
+                    minProb: { type: 'number' },
+                    expiresWithinSec: { type: 'number' },
+                    limit: { type: 'number' }
+                }
+            }
+        },
+    }, async (connection: any, request) => {
+        const sock = (connection as any)?.socket ?? connection;
+        const q = (request.query || {}) as any;
+        (scanner as any).addCrypto15mWsClient(sock, {
+            minProb: q.minProb != null ? Number(q.minProb) : undefined,
+            expiresWithinSec: q.expiresWithinSec != null ? Number(q.expiresWithinSec) : undefined,
+            limit: q.limit != null ? Number(q.limit) : undefined,
+        });
+        sock.on('close', () => {
+            try { (scanner as any).removeCrypto15mWsClient(sock); } catch {}
+        });
+    });
+
     fastify.post('/crypto15m/auto/start', {
         schema: {
             tags: ['Group Arb'],
@@ -910,7 +1039,8 @@ export const groupArbRoutes: FastifyPluginAsync = async (fastify) => {
                     amountUsd: { type: 'number' },
                     minProb: { type: 'number' },
                     expiresWithinSec: { type: 'number' },
-                    pollMs: { type: 'number' }
+                    pollMs: { type: 'number' },
+                    staleMsThreshold: { type: 'number' }
                 }
             }
         },
@@ -923,6 +1053,7 @@ export const groupArbRoutes: FastifyPluginAsync = async (fastify) => {
                     minProb: b.minProb != null ? Number(b.minProb) : undefined,
                     expiresWithinSec: b.expiresWithinSec != null ? Number(b.expiresWithinSec) : undefined,
                     pollMs: b.pollMs != null ? Number(b.pollMs) : undefined,
+                    staleMsThreshold: b.staleMsThreshold != null ? Number(b.staleMsThreshold) : undefined,
                 });
                 return { success: true, status };
             } catch (err: any) {
@@ -940,6 +1071,90 @@ export const groupArbRoutes: FastifyPluginAsync = async (fastify) => {
             try {
                 const status = scanner.stopCrypto15mAuto();
                 return { success: true, status };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.post('/crypto15m/watchdog/start', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Start crypto15m watchdog (12h monitor + auto stop on issues)',
+            body: {
+                type: 'object',
+                properties: {
+                    durationHours: { type: 'number' },
+                    pollMs: { type: 'number' },
+                    staleMsThreshold: { type: 'number' }
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const b = (request.body || {}) as any;
+                const status = (scanner as any).startCrypto15mWatchdog({
+                    durationHours: b.durationHours != null ? Number(b.durationHours) : undefined,
+                    pollMs: b.pollMs != null ? Number(b.pollMs) : undefined,
+                    staleMsThreshold: b.staleMsThreshold != null ? Number(b.staleMsThreshold) : undefined,
+                });
+                return { success: true, status };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.post('/crypto15m/watchdog/stop', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Stop crypto15m watchdog (and generate report)',
+            body: {
+                type: 'object',
+                properties: {
+                    reason: { type: 'string' },
+                    stopAuto: { type: 'boolean' }
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const b = (request.body || {}) as any;
+                const status = (scanner as any).stopCrypto15mWatchdog({
+                    reason: b.reason != null ? String(b.reason) : undefined,
+                    stopAuto: b.stopAuto != null ? !!b.stopAuto : undefined,
+                });
+                return { success: true, status };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.get('/crypto15m/watchdog/status', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Get crypto15m watchdog status',
+        },
+        handler: async (_request, reply) => {
+            try {
+                const status = (scanner as any).getCrypto15mWatchdogStatus();
+                return { success: true, status };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.get('/crypto15m/watchdog/report/latest', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Get latest crypto15m watchdog report',
+        },
+        handler: async (_request, reply) => {
+            try {
+                const report = (scanner as any).getCrypto15mWatchdogReportLatest();
+                return report;
             } catch (err: any) {
                 return reply.status(500).send({ error: err.message });
             }
@@ -984,7 +1199,57 @@ export const groupArbRoutes: FastifyPluginAsync = async (fastify) => {
             }
         }
     });
-fastify.post('/crypto15m/order', {
+
+    fastify.get('/crypto15m/proof', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Proof bundle for crypto15m orderId (order + redeem diagnostics)',
+            querystring: {
+                type: 'object',
+                required: ['orderId'],
+                properties: {
+                    orderId: { type: 'string' }
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const q = request.query as any;
+                const r = await (scanner as any).debugCrypto15mProof(String(q.orderId));
+                return r;
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.get('/crypto15m/proof-market', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Proof bundle for crypto15m market (by slug or conditionId)',
+            querystring: {
+                type: 'object',
+                properties: {
+                    slug: { type: 'string' },
+                    conditionId: { type: 'string' }
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const q = request.query as any;
+                const r = await (scanner as any).debugCrypto15mProofMarket({
+                    slug: q.slug != null ? String(q.slug) : undefined,
+                    conditionId: q.conditionId != null ? String(q.conditionId) : undefined,
+                });
+                return r;
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.post('/crypto15m/order', {
         schema: {
             tags: ['Group Arb'],
             summary: 'Place a single 15m crypto order (semi mode)',

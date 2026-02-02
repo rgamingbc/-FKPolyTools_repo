@@ -1,36 +1,28 @@
-# Backup & Reinstall Plan (Current Repo Structure)
+# Backup & Reinstall Plan (File-based)
 
 ## Repo / Host / Branch
 
-- Host (origin): `https://github.com/rgamingbc/polymarket-arbitrage-trading-tool.git`
-- Main branch: `main`
-- Working backup branch (today): `fix/relayer-multikey-backend-only-20260129`
-  - Already pushed to origin.
+- Host (origin): https://github.com/rgamingbc/polymarket-arbitrage-trading-tool.git
+- Main branch: main
+- Deployment recommendation: deploy by release tag (vYYYYMMDD-HHMM)
 
 ## What Should Be Backed Up
 
 ### 1) Code
 
-- This repo working tree (recommended: clone fresh from origin + checkout your target branch).
+- This repo working tree (recommended: clone fresh from origin + checkout your target tag).
 
 ### 2) Runtime config files (important)
 
-These are **local** files created by the backend at runtime:
+These are local files created by the backend at runtime:
 
-- Relayer config:
-  - Default: `${TMPDIR}/polymarket-tools/relayer.json`
-  - Override via env: `POLY_RELAYER_CONFIG_PATH`
-- Auto-redeem config:
-  - Default: `${TMPDIR}/polymarket-tools/auto-redeem.json`
-  - Override via env: `POLY_AUTO_REDEEM_CONFIG_PATH`
-- History file:
-  - Default: `${TMPDIR}/polymarket-tools/history.json` and `history.json.bak`
-  - Override via env: `POLY_ORDER_HISTORY_PATH`
-- PnL snapshots:
-  - Default: `${TMPDIR}/polymarket-tools/pnl-snapshots.json`
-  - Override via env: `POLY_PNL_SNAPSHOT_PATH`
+- Recommended persistent directory (cloud): /var/lib/polymarket-tools
+- Relayer config: /var/lib/polymarket-tools/relayer.json
+- Auto-redeem config: /var/lib/polymarket-tools/auto-redeem.json
+- History file: /var/lib/polymarket-tools/history.json and history.json.bak
+- PnL snapshots: /var/lib/polymarket-tools/pnl-snapshots.json
 
-Recommendation (for real machines): set all 4 env vars to a **persistent** directory (not tmp) so your config survives restarts.
+Recommendation: keep runtime files in a persistent directory so your config survives restarts.
 
 ### 3) Secrets (do NOT commit to git)
 
@@ -49,45 +41,61 @@ Your UI fork repo can be used instead of the built-in UI folder:
 
 ## Backup Procedure (Recommended)
 
-1) Backup code
-   - `git clone` from origin on a clean machine
-   - `git checkout fix/relayer-multikey-backend-only-20260129` (or the branch you want)
+### A) Backup code (Git)
 
-2) Backup runtime configs
-   - Copy the 4 files listed above into a safe folder (e.g. `~/polymarket-tools-backup/`)
-   - Verify `relayer.json` contains multiple keys and the correct activeIndex
+On your local machine:
 
-3) Backup local DBs (optional)
-   - `FKPolyTools_Repo/datas/whales.db` if you rely on it
+    git clone https://github.com/rgamingbc/polymarket-arbitrage-trading-tool.git
+    cd polymarket-arbitrage-trading-tool
+    git fetch --all --tags
+    git checkout vYYYYMMDD-HHMM
+
+### B) Backup runtime files (tar.gz, cloud -> local)
+
+On EC2:
+
+    TS=$(date +%Y%m%d-%H%M%S)
+    sudo mkdir -p /var/backups/fktools
+    sudo tar -czf /var/backups/fktools/fktools-$TS.tar.gz /var/lib/polymarket-tools /etc/nginx/sites-available/fktools /etc/systemd/system/fktools-api.service
+    sudo ls -lah /var/backups/fktools/fktools-$TS.tar.gz
+
+On your local machine:
+
+    mkdir -p ~/fktools_backups
+    scp -i ~/Downloads/fktools-key.pem ubuntu@56.68.6.71:/var/backups/fktools/fktools-YYYYMMDD-HHMMSS.tar.gz ~/fktools_backups/
 
 ## Reinstall / Restore Procedure
 
 ### Backend (FKPolyTools_Repo/api_src)
 
 1) Install deps
-   - `npm install` (or your team’s standard package manager)
+
+    cd FKPolyTools_Repo/api_src
+    npm ci
 
 2) Restore env vars (recommended)
-   - Set:
-     - `POLY_RELAYER_CONFIG_PATH`
-     - `POLY_AUTO_REDEEM_CONFIG_PATH`
-     - `POLY_ORDER_HISTORY_PATH`
-     - `POLY_PNL_SNAPSHOT_PATH`
-   - Set Polymarket private key in env (never in repo).
 
-3) Restore runtime config files
-   - Copy your backed-up `relayer.json / auto-redeem.json / history.json* / pnl-snapshots.json` into the paths above.
+Set Polymarket private key in env (never in repo).
+
+3) Restore runtime files
+
+Copy /var/lib/polymarket-tools from your backup tar.gz.
 
 4) Run backend
-   - `npm run dev` (serves `/api/*`)
+
+    npm run build
+    npm run dev
 
 ### Frontend (FKPolyTools_Repo/web_front_src)
 
 1) Install deps
-   - `npm install`
+
+    cd FKPolyTools_Repo/web_front_src
+    npm ci
 
 2) Run UI
-   - `npm run dev`
+
+    npm run dev
 
 3) Verify UI pages
    - `/crypto-15m`
