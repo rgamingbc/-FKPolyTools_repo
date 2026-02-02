@@ -49,6 +49,16 @@ function Sidebar() {
             icon: <WalletOutlined />,
             label: '👀 已跟踪鲸鱼',
         },
+        {
+            key: '/advanced',
+            icon: <WalletOutlined />, // Using same icon for now
+            label: '🚀 高级策略',
+        },
+        {
+            key: '/crypto-15m',
+            icon: <SwapOutlined />,
+            label: '⏱️ 15M Crypto',
+        },
     ];
 
     return (
