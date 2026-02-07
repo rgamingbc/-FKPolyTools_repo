@@ -9,7 +9,7 @@ Polymarket Web 仪表盘，基于 React + Vite + Ant Design 构建。
 npm ci
 
 # 开发模式
-API_PORT=3001 npm run dev
+VITE_API_PORT=3001 npm run dev
 
 # 构建
 npm run build
@@ -20,7 +20,7 @@ npm run preview
 
 ## 启动说明
 
-**注意：** 前端通过 Vite proxy 转发 `/api` 到后端，默认后端端口是 `API_PORT=3001`（可改环境变量）。
+**注意：** 前端通过 Vite proxy 转发 `/api` 到后端，默认后端端口是 `3001`（可用 `VITE_API_PORT` 覆盖）。
 
 ```bash
 # 1. 先启动 API 服务
@@ -31,7 +31,7 @@ API_PORT=3001 npm run dev
 # 2. 再启动前端
 cd ../web_front_src
 npm ci
-API_PORT=3001 npm run dev
+VITE_API_PORT=3001 npm run dev
 ```
 
 访问 http://localhost:5173

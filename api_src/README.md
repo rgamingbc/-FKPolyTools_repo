@@ -49,7 +49,7 @@ API_PORT=3001 npm run start
 
 | 路径 | 描述 |
 |------|------|
-| `ws://localhost:3000/ws/market/:conditionId` | 实时市场数据推送 |
+| `ws://localhost:3001/ws/market/:conditionId` | 实时市场数据推送 |
 
 ## 环境变量
 

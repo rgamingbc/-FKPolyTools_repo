@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button, Card, InputNumber, Select, Table, Tag, Typography, Space, Alert, Tooltip } from 'antd';
+import { Button, Card, InputNumber, Select, Table, Tag, Typography, Space, Alert, Tooltip, Checkbox, Modal, message } from 'antd';
 import { PlayCircleOutlined, PauseCircleOutlined, ReloadOutlined, ShoppingCartOutlined, SafetyCertificateOutlined, DeleteOutlined } from '@ant-design/icons';
 import axios from 'axios';
 
@@ -17,6 +17,7 @@ function Crypto15m() {
     const [watchdog, setWatchdog] = useState<any>(null);
     const [health, setHealth] = useState<any>(null);
     const [history, setHistory] = useState<any[]>([]);
+    const [configEvents, setConfigEvents] = useState<any[]>([]);
     const [historyStrategy, setHistoryStrategy] = useState<'crypto15m' | 'cryptoall' | 'all'>('crypto15m');
     const [autoRefresh, setAutoRefresh] = useState(true);
     const [showPendingOnly, setShowPendingOnly] = useState(false);
@@ -25,18 +26,36 @@ function Crypto15m() {
     const [minProb, setMinProb] = useState<number>(0.9);
     const [expiresWithinSec, setExpiresWithinSec] = useState<number>(180);
     const [amountUsd, setAmountUsd] = useState<number>(1);
+    const [buySizingMode, setBuySizingMode] = useState<'fixed' | 'orderbook_max' | 'all_capital'>('fixed');
+    const [trendEnabled, setTrendEnabled] = useState<boolean>(true);
+    const [trendMinutes, setTrendMinutes] = useState<number>(1);
+    const [staleMsThreshold, setStaleMsThreshold] = useState<number>(5000);
     const [btcMinDelta, setBtcMinDelta] = useState<number>(600);
     const [ethMinDelta, setEthMinDelta] = useState<number>(30);
     const [solMinDelta, setSolMinDelta] = useState<number>(0.8);
     const [xrpMinDelta, setXrpMinDelta] = useState<number>(0.0065);
+    const [stoplossEnabled, setStoplossEnabled] = useState(false);
+    const [stoplossCut1DropCents, setStoplossCut1DropCents] = useState<number>(1);
+    const [stoplossCut1SellPct, setStoplossCut1SellPct] = useState<number>(50);
+    const [stoplossCut2DropCents, setStoplossCut2DropCents] = useState<number>(2);
+    const [stoplossCut2SellPct, setStoplossCut2SellPct] = useState<number>(100);
+    const [stoplossMinSecToExit, setStoplossMinSecToExit] = useState<number>(25);
+    const [adaptiveDeltaEnabled, setAdaptiveDeltaEnabled] = useState(true);
+    const [adaptiveDeltaBigMoveMultiplier, setAdaptiveDeltaBigMoveMultiplier] = useState<number>(2);
+    const [adaptiveDeltaRevertNoBuyCount, setAdaptiveDeltaRevertNoBuyCount] = useState<number>(4);
     const [historySummary, setHistorySummary] = useState<any>(null);
+    const [stoplossOpen, setStoplossOpen] = useState(false);
+    const [stoplossLoading, setStoplossLoading] = useState(false);
+    const [stoplossHistory, setStoplossHistory] = useState<any[]>([]);
+    const [stoplossSummary, setStoplossSummary] = useState<any>(null);
     const [startLoading, setStartLoading] = useState(false);
     const [stopLoading, setStopLoading] = useState(false);
     const [refreshLoading, setRefreshLoading] = useState(false);
     const [healthLoading, setHealthLoading] = useState(false);
     const [resetLoading, setResetLoading] = useState(false);
-    const [thresholdsLoading, setThresholdsLoading] = useState(false);
+    const [, setThresholdsLoading] = useState(false);
     const [thresholdsSaving, setThresholdsSaving] = useState(false);
+    const [settingsHydrated, setSettingsHydrated] = useState(false);
     const [watchdogStartLoading, setWatchdogStartLoading] = useState(false);
     const [watchdogStopLoading, setWatchdogStopLoading] = useState(false);
     const [bidLoadingId, setBidLoadingId] = useState<string | null>(null);
@@ -53,6 +72,27 @@ function Crypto15m() {
         const n = Number(p);
         if (!Number.isFinite(n)) return '-';
         return (n * 100).toFixed(1) + 'c';
+    };
+
+    const summarizeConfig = (cfg: any) => {
+        const c = cfg || {};
+        const enabled = c.enabled != null ? (c.enabled ? 'ON' : 'OFF') : '-';
+        const parts = [
+            `enabled=${enabled}`,
+            c.amountUsd != null ? `amount=$${Number(c.amountUsd)}` : null,
+            c.buySizingMode != null ? `buySizing=${String(c.buySizingMode)}` : null,
+            c.minProb != null ? `minProb=${Number(c.minProb)}` : null,
+            c.expiresWithinSec != null ? `exp≤${Number(c.expiresWithinSec)}s` : null,
+            c.pollMs != null ? `poll=${Number(c.pollMs)}ms` : null,
+            c.staleMsThreshold != null ? `stale=${Number(c.staleMsThreshold)}ms` : null,
+            c.trendEnabled != null ? `trend=${c.trendEnabled ? 'ON' : 'OFF'}` : null,
+            c.trendMinutes != null ? `trendMin=${Number(c.trendMinutes)}` : null,
+            c.stoplossEnabled != null ? `stoploss=${c.stoplossEnabled ? 'ON' : 'OFF'}` : null,
+            c.adaptiveDeltaEnabled != null ? `adaptiveΔ=${c.adaptiveDeltaEnabled ? 'ON' : 'OFF'}` : null,
+            c.adaptiveDeltaBigMoveMultiplier != null ? `bigMove×=${Number(c.adaptiveDeltaBigMoveMultiplier)}` : null,
+            c.adaptiveDeltaRevertNoBuyCount != null ? `revertN=${Number(c.adaptiveDeltaRevertNoBuyCount)}` : null,
+        ].filter(Boolean);
+        return parts.join(' • ');
     };
 
     const CountdownTag = ({ endDate, fallbackSeconds }: { endDate?: string; fallbackSeconds?: number }) => {
@@ -79,21 +119,62 @@ function Crypto15m() {
             if (parsed?.minProb != null) setMinProb(Number(parsed.minProb));
             if (parsed?.expiresWithinSec != null) setExpiresWithinSec(Number(parsed.expiresWithinSec));
             if (parsed?.amountUsd != null) setAmountUsd(Number(parsed.amountUsd));
+            if (parsed?.buySizingMode != null) {
+                const m = String(parsed.buySizingMode);
+                setBuySizingMode(m === 'orderbook_max' ? 'orderbook_max' : m === 'all_capital' ? 'all_capital' : 'fixed');
+            }
+            if (parsed?.trendEnabled != null) setTrendEnabled(!!parsed.trendEnabled);
+            if (parsed?.trendMinutes != null) setTrendMinutes(Number(parsed.trendMinutes));
+            if (parsed?.staleMsThreshold != null) setStaleMsThreshold(Number(parsed.staleMsThreshold));
             if (parsed?.pollMs != null) setPollMs(Number(parsed.pollMs));
             if (parsed?.btcMinDelta != null) setBtcMinDelta(Number(parsed.btcMinDelta));
             if (parsed?.ethMinDelta != null) setEthMinDelta(Number(parsed.ethMinDelta));
             if (parsed?.solMinDelta != null) setSolMinDelta(Number(parsed.solMinDelta));
             if (parsed?.xrpMinDelta != null) setXrpMinDelta(Number(parsed.xrpMinDelta));
+            if (parsed?.stoplossEnabled != null) setStoplossEnabled(!!parsed.stoplossEnabled);
+            if (parsed?.stoplossCut1DropCents != null) setStoplossCut1DropCents(Number(parsed.stoplossCut1DropCents));
+            if (parsed?.stoplossCut1SellPct != null) setStoplossCut1SellPct(Number(parsed.stoplossCut1SellPct));
+            if (parsed?.stoplossCut2DropCents != null) setStoplossCut2DropCents(Number(parsed.stoplossCut2DropCents));
+            if (parsed?.stoplossCut2SellPct != null) setStoplossCut2SellPct(Number(parsed.stoplossCut2SellPct));
+            if (parsed?.stoplossMinSecToExit != null) setStoplossMinSecToExit(Number(parsed.stoplossMinSecToExit));
+            if (parsed?.adaptiveDeltaEnabled != null) setAdaptiveDeltaEnabled(!!parsed.adaptiveDeltaEnabled);
+            if (parsed?.adaptiveDeltaBigMoveMultiplier != null) setAdaptiveDeltaBigMoveMultiplier(Number(parsed.adaptiveDeltaBigMoveMultiplier));
+            if (parsed?.adaptiveDeltaRevertNoBuyCount != null) setAdaptiveDeltaRevertNoBuyCount(Number(parsed.adaptiveDeltaRevertNoBuyCount));
         } catch {
+        } finally {
+            setSettingsHydrated(true);
         }
     }, []);
 
     useEffect(() => {
+        if (!settingsHydrated) return;
         try {
-            localStorage.setItem('crypto15m_settings_v1', JSON.stringify({ minProb, expiresWithinSec, amountUsd, pollMs, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta }));
+            localStorage.setItem('crypto15m_settings_v1', JSON.stringify({
+                minProb,
+                expiresWithinSec,
+                amountUsd,
+                buySizingMode,
+                trendEnabled,
+                trendMinutes,
+                staleMsThreshold,
+                pollMs,
+                btcMinDelta,
+                ethMinDelta,
+                solMinDelta,
+                xrpMinDelta,
+                stoplossEnabled,
+                stoplossCut1DropCents,
+                stoplossCut1SellPct,
+                stoplossCut2DropCents,
+                stoplossCut2SellPct,
+                stoplossMinSecToExit,
+                adaptiveDeltaEnabled,
+                adaptiveDeltaBigMoveMultiplier,
+                adaptiveDeltaRevertNoBuyCount,
+            }));
         } catch {
         }
-    }, [minProb, expiresWithinSec, amountUsd, pollMs, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta]);
+    }, [settingsHydrated, minProb, expiresWithinSec, amountUsd, buySizingMode, trendEnabled, trendMinutes, staleMsThreshold, pollMs, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta, stoplossEnabled, stoplossCut1DropCents, stoplossCut1SellPct, stoplossCut2DropCents, stoplossCut2SellPct, stoplossMinSecToExit, adaptiveDeltaEnabled, adaptiveDeltaBigMoveMultiplier, adaptiveDeltaRevertNoBuyCount]);
 
     const fetchStatus = async () => {
         const res = await api.get('/group-arb/crypto15m/status');
@@ -130,6 +211,7 @@ function Crypto15m() {
             const h = Array.isArray(res.data?.history) ? res.data.history : [];
             setHistory(h.map((x: any) => ({ ...x, strategy: 'crypto15m' })));
             setHistorySummary(res.data?.summary || null);
+            setConfigEvents(Array.isArray(res.data?.configEvents) ? res.data.configEvents : []);
             return;
         }
         if (historyStrategy === 'cryptoall') {
@@ -137,6 +219,7 @@ function Crypto15m() {
             const h = Array.isArray(res.data?.history) ? res.data.history : [];
             setHistory(h.map((x: any) => ({ ...x, strategy: 'cryptoall' })));
             setHistorySummary(res.data?.summary || null);
+            setConfigEvents([]);
             return;
         }
         const [r15, rAll] = await Promise.all([
@@ -164,6 +247,23 @@ function Crypto15m() {
         };
         setHistory(merged);
         setHistorySummary(sum);
+        setConfigEvents(Array.isArray(r15.data?.configEvents) ? r15.data.configEvents : []);
+    };
+
+    const fetchStoplossHistory = async () => {
+        const res = await api.get('/group-arb/crypto15m/stoploss/history', { params: { maxEntries: 120 } });
+        setStoplossHistory(Array.isArray(res.data?.history) ? res.data.history : []);
+        setStoplossSummary(res.data?.summary || null);
+    };
+
+    const onOpenStoploss = async () => {
+        setStoplossOpen(true);
+        setStoplossLoading(true);
+        try {
+            await fetchStoplossHistory();
+        } finally {
+            setStoplossLoading(false);
+        }
     };
 
     const fetchHealth = async () => {
@@ -196,14 +296,39 @@ function Crypto15m() {
         }
     };
 
-    const saveThresholds = async () => {
+    const saveAllSettings = async () => {
         setThresholdsSaving(true);
         try {
-            await api.post('/group-arb/crypto15m/delta-thresholds', { btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta });
+            await Promise.all([
+                api.post('/group-arb/crypto15m/delta-thresholds', { btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta }),
+                api.post('/group-arb/crypto15m/config', {
+                    amountUsd,
+                    buySizingMode,
+                    minProb,
+                    expiresWithinSec,
+                    pollMs,
+                    trendEnabled,
+                    trendMinutes,
+                    staleMsThreshold,
+                    stoplossEnabled,
+                    stoplossCut1DropCents,
+                    stoplossCut1SellPct,
+                    stoplossCut2DropCents,
+                    stoplossCut2SellPct,
+                    stoplossMinSecToExit,
+                    adaptiveDeltaEnabled,
+                    adaptiveDeltaBigMoveMultiplier,
+                    adaptiveDeltaRevertNoBuyCount,
+                }),
+            ]);
+            message.success('Saved');
+        } catch (e: any) {
+            const msg = e?.response?.data?.error || e?.message || String(e);
+            message.error(String(msg));
         } finally {
             setThresholdsSaving(false);
         }
-        fetchThresholds().catch(() => {});
+        refreshAll().catch(() => {});
     };
 
     const refreshAll = async () => {
@@ -322,7 +447,24 @@ function Crypto15m() {
     const onStart = async () => {
         setStartLoading(true);
         try {
-            await api.post('/group-arb/crypto15m/auto/start', { amountUsd, minProb, expiresWithinSec, pollMs });
+            await api.post('/group-arb/crypto15m/auto/start', {
+                amountUsd,
+                minProb,
+                expiresWithinSec,
+                pollMs,
+                trendEnabled,
+                trendMinutes,
+                staleMsThreshold,
+                stoplossEnabled,
+                stoplossCut1DropCents,
+                stoplossCut1SellPct,
+                stoplossCut2DropCents,
+                stoplossCut2SellPct,
+                stoplossMinSecToExit,
+                adaptiveDeltaEnabled,
+                adaptiveDeltaBigMoveMultiplier,
+                adaptiveDeltaRevertNoBuyCount,
+            });
         } finally {
             setStartLoading(false);
         }
@@ -362,12 +504,31 @@ function Crypto15m() {
     const onBid = async (row: any) => {
         setBidLoadingId(String(row?.conditionId || ''));
         try {
-            await api.post('/group-arb/crypto15m/order', {
+            const res = await api.post('/group-arb/crypto15m/order', {
                 conditionId: row.conditionId,
                 outcomeIndex: row.chosenIndex,
                 amountUsd,
                 minPrice: minProb,
+                trendEnabled,
+                trendMinutes,
+                stoplossEnabled,
+                stoplossCut1DropCents,
+                stoplossCut1SellPct,
+                stoplossCut2DropCents,
+                stoplossCut2SellPct,
+                stoplossMinSecToExit,
             });
+            const data = res.data || {};
+            if (data?.success === true) {
+                message.success('Order placed');
+            } else if (data?.skipped === true) {
+                message.warning(`Skipped: ${String(data?.reason || 'skipped')}`);
+            } else {
+                message.error(String(data?.error || data?.reason || 'Order failed'));
+            }
+        } catch (e: any) {
+            const msg = e?.response?.data?.error || e?.message || String(e);
+            message.error(String(msg));
         } finally {
             setBidLoadingId(null);
         }
@@ -518,6 +679,32 @@ function Crypto15m() {
         ];
     }, []);
 
+    const configColumns = useMemo(() => {
+        return [
+            { title: 'Time', dataIndex: 'timestamp', key: 'timestamp', width: 190, render: (v: any) => String(v || '').replace('T', ' ').replace('Z', '') },
+            { title: 'Event', dataIndex: 'action', key: 'action', width: 120, render: (v: any) => <Tag color={String(v).includes('_start') ? 'green' : 'default'}>{String(v || '')}</Tag> },
+            { title: 'Enabled', dataIndex: 'enabled', key: 'enabled', width: 90, render: (v: any) => <Tag color={v === true ? 'green' : v === false ? 'red' : 'default'}>{v === true ? 'ON' : v === false ? 'OFF' : '-'}</Tag> },
+            { title: 'Config', dataIndex: 'config', key: 'config', render: (v: any) => <span style={{ color: '#ddd' }}>{summarizeConfig(v)}</span> },
+        ];
+    }, []);
+
+    const stoplossColumns = useMemo(() => {
+        return [
+            { title: 'Time', dataIndex: 'timestamp', key: 'timestamp', width: 190, render: (v: any) => String(v || '').replace('T', ' ').replace('Z', '') },
+            { title: 'TF', dataIndex: 'timeframe', key: 'timeframe', width: 70, render: (v: any) => v ? <Tag>{String(v).toUpperCase()}</Tag> : '-' },
+            { title: 'Symbol', dataIndex: 'symbol', key: 'symbol', width: 90, render: (v: any) => <Tag color="blue">{String(v || '').toUpperCase()}</Tag> },
+            { title: 'Reason', dataIndex: 'reason', key: 'reason', width: 80, render: (v: any) => <Tag color={String(v) === 'cut2' ? 'red' : String(v) === 'cut1' ? 'gold' : 'default'}>{String(v || '-')}</Tag> },
+            { title: 'Target%', dataIndex: 'targetPct', key: 'targetPct', width: 90, render: (v: any) => (v != null ? Number(v).toFixed(0) : '-') },
+            { title: 'Sell', dataIndex: 'sellAmount', key: 'sellAmount', width: 90, render: (v: any) => (v != null ? Number(v).toFixed(4) : '-') },
+            { title: 'TargetSell', dataIndex: 'remainingToSellTarget', key: 'remainingToSellTarget', width: 90, render: (v: any) => (v != null ? Number(v).toFixed(4) : '-') },
+            { title: 'Bid', dataIndex: 'currentBid', key: 'currentBid', width: 80, render: (v: any) => (v != null ? toCents(v) : '-') },
+            { title: 'Ask', dataIndex: 'currentAsk', key: 'currentAsk', width: 80, render: (v: any) => (v != null ? toCents(v) : '-') },
+            { title: 'Expire(s)', dataIndex: 'secondsToExpire', key: 'secondsToExpire', width: 90, render: (v: any) => (v != null ? <Tag color={Number(v) <= 30 ? 'red' : 'gold'}>{String(v)}</Tag> : '-') },
+            { title: 'Result', key: 'result', width: 90, render: (_: any, r: any) => <Tag color={r?.success ? 'green' : r?.skipped ? 'default' : 'red'}>{r?.success ? 'OK' : r?.skipped ? 'SKIP' : 'FAIL'}</Tag> },
+            { title: 'Error', dataIndex: 'error', key: 'error', render: (v: any) => (v ? String(v) : '-') },
+        ];
+    }, []);
+
     return (
         <div>
             <Title level={3} style={{ color: '#fff', marginBottom: 16 }}>
@@ -538,6 +725,38 @@ function Crypto15m() {
                     <InputNumber min={10} max={300} step={5} value={expiresWithinSec} onChange={(v) => setExpiresWithinSec(Number(v))} />
                     <span style={{ color: '#ddd' }}>Amount ($)</span>
                     <InputNumber min={1} max={1000} step={1} value={amountUsd} onChange={(v) => setAmountUsd(Math.max(1, Math.floor(Number(v))))} />
+                    <span style={{ color: '#ddd' }}>Buy sizing</span>
+                    <Select
+                        style={{ width: 160 }}
+                        value={buySizingMode}
+                        onChange={(v) => setBuySizingMode(String(v) === 'orderbook_max' ? 'orderbook_max' : String(v) === 'all_capital' ? 'all_capital' : 'fixed')}
+                        options={[
+                            { value: 'fixed', label: 'fixed' },
+                            { value: 'orderbook_max', label: 'orderbook_max' },
+                            { value: 'all_capital', label: 'all_capital' },
+                        ]}
+                    />
+                    <Checkbox checked={trendEnabled} onChange={(e) => setTrendEnabled(e.target.checked)}>Trend</Checkbox>
+                    <span style={{ color: '#ddd' }}>Min</span>
+                    <InputNumber min={1} max={10} step={1} value={trendMinutes} onChange={(v) => setTrendMinutes(Math.max(1, Math.min(10, Math.floor(Number(v)))))} disabled={!trendEnabled} />
+                    <span style={{ color: '#ddd' }}>Stale(ms)</span>
+                    <InputNumber min={500} max={60000} step={250} value={staleMsThreshold} onChange={(v) => setStaleMsThreshold(Math.max(500, Math.min(60000, Math.floor(Number(v)))))} />
+                    <Checkbox checked={stoplossEnabled} onChange={(e) => setStoplossEnabled(e.target.checked)}>Stoploss</Checkbox>
+                    <span style={{ color: '#ddd' }}>Cut1 -c</span>
+                    <InputNumber min={0} max={50} step={1} value={stoplossCut1DropCents} onChange={(v) => setStoplossCut1DropCents(Math.max(0, Math.min(50, Math.floor(Number(v)))))} />
+                    <span style={{ color: '#ddd' }}>%</span>
+                    <InputNumber min={0} max={100} step={1} value={stoplossCut1SellPct} onChange={(v) => setStoplossCut1SellPct(Math.max(0, Math.min(100, Math.floor(Number(v)))))} />
+                    <span style={{ color: '#ddd' }}>Cut2 -c</span>
+                    <InputNumber min={0} max={50} step={1} value={stoplossCut2DropCents} onChange={(v) => setStoplossCut2DropCents(Math.max(0, Math.min(50, Math.floor(Number(v)))))} />
+                    <span style={{ color: '#ddd' }}>%</span>
+                    <InputNumber min={0} max={100} step={1} value={stoplossCut2SellPct} onChange={(v) => setStoplossCut2SellPct(Math.max(0, Math.min(100, Math.floor(Number(v)))))} />
+                    <span style={{ color: '#ddd' }}>MinExit(s)</span>
+                    <InputNumber min={0} max={600} step={1} value={stoplossMinSecToExit} onChange={(v) => setStoplossMinSecToExit(Math.max(0, Math.min(600, Math.floor(Number(v)))))} />
+                    <Checkbox checked={adaptiveDeltaEnabled} onChange={(e) => setAdaptiveDeltaEnabled(e.target.checked)}>Adaptive Δ</Checkbox>
+                    <span style={{ color: '#ddd' }}>BigMove×</span>
+                    <InputNumber min={1} max={10} step={0.5} value={adaptiveDeltaBigMoveMultiplier} onChange={(v) => setAdaptiveDeltaBigMoveMultiplier(Math.max(1, Math.min(10, Number(v))))} />
+                    <span style={{ color: '#ddd' }}>Revert N</span>
+                    <InputNumber min={1} max={50} step={1} value={adaptiveDeltaRevertNoBuyCount} onChange={(v) => setAdaptiveDeltaRevertNoBuyCount(Math.max(1, Math.min(50, Math.floor(Number(v)))))} />
                     <span style={{ color: '#ddd' }}>Δ BTC</span>
                     <InputNumber min={0} step={1} value={btcMinDelta} onChange={(v) => setBtcMinDelta(Math.max(0, Number(v)))} />
                     <span style={{ color: '#ddd' }}>Δ ETH</span>
@@ -546,7 +765,7 @@ function Crypto15m() {
                     <InputNumber min={0} step={0.1} value={solMinDelta} onChange={(v) => setSolMinDelta(Math.max(0, Number(v)))} />
                     <span style={{ color: '#ddd' }}>Δ XRP</span>
                     <InputNumber min={0} step={0.0001} value={xrpMinDelta} onChange={(v) => setXrpMinDelta(Math.max(0, Number(v)))} />
-                    <Button onClick={saveThresholds} loading={thresholdsSaving} disabled={thresholdsLoading}>
+                    <Button onClick={saveAllSettings} loading={thresholdsSaving}>
                         Confirm
                     </Button>
                     <Button onClick={onStartWatchdog} loading={watchdogStartLoading} disabled={watchdog?.running === true}>
@@ -603,6 +822,9 @@ function Crypto15m() {
                             { label: 'History: All', value: 'all' },
                         ]}
                     />
+                    <Button onClick={onOpenStoploss}>
+                        Stoploss
+                    </Button>
                     <Button
                         icon={<SafetyCertificateOutlined />}
                         onClick={async () => {
@@ -627,7 +849,7 @@ function Crypto15m() {
                 <Alert
                     style={{ marginTop: 12 }}
                     type="info"
-                    message={`WS: ${wsConnected ? 'ON' : 'OFF'} • WS Last: ${wsLastAt || '-'} • Watchdog: ${watchdog?.running ? 'ON' : 'OFF'} • Auto: ${status?.enabled ? 'ON' : 'OFF'} • LastScanAt: ${status?.lastScanAt || '-'} • Tracked: ${Array.isArray(status?.tracked) ? status.tracked.length : '-'} • Candidates: ${candidatesMeta?.eligible ?? '-'} eligible / ${candidatesMeta?.count ?? '-'} total`}
+                    message={`WS: ${wsConnected ? 'ON' : 'OFF'} • WS Last: ${wsLastAt || '-'} • Key: ${status?.hasValidKey ? 'OK' : 'MISSING'} • Watchdog: ${watchdog?.running ? 'ON' : 'OFF'} • Auto: ${status?.enabled ? 'ON' : 'OFF'} • LastScanAt: ${status?.lastScanAt || '-'} • Tracked: ${Array.isArray(status?.tracked) ? status.tracked.length : '-'} • Candidates: ${candidatesMeta?.eligible ?? '-'} eligible / ${candidatesMeta?.count ?? '-'} total`}
                     showIcon
                 />
                 {wsError ? <Alert style={{ marginTop: 12 }} type="error" message={wsError} showIcon /> : null}
@@ -636,6 +858,21 @@ function Crypto15m() {
                         style={{ marginTop: 12 }}
                         type="info"
                         message={`Active: ${Object.keys(status.actives).length ? Object.keys(status.actives).map((k) => `${k}:${toCents(status.actives[k]?.price)} ${status.actives[k]?.outcome || ''}`).join(' | ') : 'none'}`}
+                        showIcon
+                    />
+                ) : null}
+                {status?.adaptiveDelta ? (
+                    <Alert
+                        style={{ marginTop: 12 }}
+                        type="info"
+                        message={`Adaptive Δ: ${['BTC', 'ETH', 'SOL', 'XRP'].map((sym) => {
+                            const s = (status?.adaptiveDelta || {})[sym] || {};
+                            const base = s.baseMinDelta != null ? Number(s.baseMinDelta) : null;
+                            const ov = s.overrideMinDelta != null ? Number(s.overrideMinDelta) : null;
+                            const rem = s.remainingToRevert != null ? String(s.remainingToRevert) : '-';
+                            if (base == null) return `${sym}:-`;
+                            return ov != null ? `${sym}:${base}→${ov} (remain ${rem})` : `${sym}:${base}`;
+                        }).join(' | ')}`}
                         showIcon
                     />
                 ) : null}
@@ -670,6 +907,19 @@ function Crypto15m() {
                         showIcon
                     />
                 ) : null}
+                {configEvents.length ? (
+                    <div style={{ marginBottom: 12 }}>
+                        <Title level={5} style={{ color: '#fff', marginBottom: 8 }}>Config Records</Title>
+                        <Table
+                            rowKey={(r) => String(r.id)}
+                            loading={false}
+                            dataSource={configEvents.slice(0, 20)}
+                            columns={configColumns as any}
+                            pagination={false}
+                            size="small"
+                        />
+                    </div>
+                ) : null}
                 <Table
                     rowKey={(r) => String(r.id)}
                     loading={false}
@@ -679,6 +929,39 @@ function Crypto15m() {
                     size="small"
                 />
             </Card>
+
+            <Modal
+                open={stoplossOpen}
+                onCancel={() => setStoplossOpen(false)}
+                footer={null}
+                width={1100}
+                title={
+                    <Space wrap>
+                        <Button onClick={async () => {
+                            setStoplossLoading(true);
+                            try {
+                                await fetchStoplossHistory();
+                            } finally {
+                                setStoplossLoading(false);
+                            }
+                        }} loading={stoplossLoading}>
+                            Refresh
+                        </Button>
+                        <Tag>OK: {stoplossSummary?.successCount ?? 0}</Tag>
+                        <Tag>Skip: {stoplossSummary?.skippedCount ?? 0}</Tag>
+                        <Tag>Fail: {stoplossSummary?.failedCount ?? 0}</Tag>
+                    </Space>
+                }
+            >
+                <Table
+                    rowKey={(r) => String(r?.id || Math.random())}
+                    loading={stoplossLoading}
+                    dataSource={stoplossHistory}
+                    columns={stoplossColumns as any}
+                    pagination={false}
+                    size="small"
+                />
+            </Modal>
         </div>
     );
 }

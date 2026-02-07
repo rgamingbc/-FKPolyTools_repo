@@ -13,7 +13,8 @@ Polymarket 统一 TypeScript SDK - 预测市场交易、套利检测、聪明钱
 
 - 后端：`FKPolyTools_Repo/api_src`
 - 前端：`FKPolyTools_Repo/web_front_src`
-- 指引：`FKPolyTools_Repo/docs/HANDOFF.md`、`FKPolyTools_Repo/docs/backup-reinstall-plan.md`
+- 指引：`FKPolyTools_Repo/docs/INSTALL.md`、`FKPolyTools_Repo/docs/HANDOFF.md`、`FKPolyTools_Repo/docs/BACKUP-RESTORE.md`
+- 新機/雲端更新陷阱：`FKPolyTools_Repo/docs/CLOUD-UPDATE-PROMPT.md`
 
 最小啟動：
 
@@ -24,7 +25,7 @@ API_PORT=3001 npm run dev
 
 cd ../web_front_src
 npm ci
-API_PORT=3001 npm run dev
+VITE_API_PORT=3001 npm run dev
 ```
 
 **开发者**: [@hhhx402](https://x.com/hhhx402) | **项目**: [Catalyst.fun](https://x.com/catalystdotfun)

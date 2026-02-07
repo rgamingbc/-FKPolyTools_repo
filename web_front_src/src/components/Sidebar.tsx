@@ -64,6 +64,11 @@ function Sidebar() {
             icon: <SwapOutlined />,
             label: '🧩 Crypto All',
         },
+        {
+            key: '/crypto-all2',
+            icon: <SwapOutlined />,
+            label: '🧩 Crypto All2',
+        },
     ];
 
     return (
