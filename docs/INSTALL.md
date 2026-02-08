@@ -6,6 +6,27 @@
 - 前端（Vite / React）：`FKPolyTools_Repo/web_front_src`
 - 預設 Port：API = 3001、Web = 5173
 
+## 從 Git 取得 / 更新
+
+### 更新（既有機器）
+
+```bash
+git pull --ff-only
+```
+
+如你係喺外層 repo 操作（而 `FKPolyTools_Repo` 係獨立 repo / 類 submodule），要另外更新一次：
+
+```bash
+cd FKPolyTools_Repo
+git pull --ff-only
+```
+
+如果你用 submodule 管理：
+
+```bash
+git submodule update --init --recursive
+```
+
 ## 後端：api_src
 
 ```bash
@@ -38,6 +59,16 @@ npm run dev
 
 - 交易需要 `POLY_PRIVKEY`（API Key/UUID 唔足夠用嚟簽交易）
 - 設定私鑰後，Trading client 初始化失敗會自動重試（有 backoff），UI 會顯示 `Key/Trading/Creds/InitError`
+
+### 3) 本地完全打唔開（Dashboard/CryptoAll/All2 全部入唔到）
+
+- 先確認 Web 係咪真係起咗（預設 `http://localhost:5173/`）
+- 如果 `localhost:5173` 連唔到：
+  - 多數係未有喺 `FKPolyTools_Repo/web_front_src` 起 Web
+  - 或者 5173 被佔用，Vite 會自動轉用 5174/5175（要睇啟動 log 顯示嘅 URL）
+- 如果你其實係喺另一部機/VM/容器起 server：
+  - `localhost` 只會指向你本機，必然打唔開
+  - 建議用 SSH port-forward，或者 Vite 用 `--host 0.0.0.0` 再用 `http://<機器IP>:5173/` 開
 
 ## 驗收
 

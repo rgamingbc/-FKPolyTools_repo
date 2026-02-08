@@ -21,6 +21,30 @@
 5) `FKPolyTools_Repo/web_front_src/README.md`
 
 # 最小啟動方式（本機）
+## 從 Git 取得 / 更新（必做）
+### 新機第一次安裝（建議）
+你要先確認你拎到嘅係邊個 repo（外層 repo vs 只係 FKPolyTools_Repo）。常見做法係先拎外層 repo，再拉齊內層 `FKPolyTools_Repo`：
+
+```bash
+git clone <repo_url>
+cd <repo_root>
+git submodule update --init --recursive || true
+```
+
+如果你冇用 submodule（或者你拎到嘅只係 `FKPolyTools_Repo`），就直接入 `FKPolyTools_Repo` 跑安裝即可。
+
+### 既有機器更新（每次更新前建議先停 server）
+```bash
+git pull --ff-only
+cd FKPolyTools_Repo && git pull --ff-only
+```
+
+更新後通常要重跑依賴，避免 node_modules 漂移：
+```bash
+cd FKPolyTools_Repo/api_src && npm ci
+cd ../web_front_src && npm ci
+```
+
 後端（API）：
 ```bash
 cd FKPolyTools_Repo/api_src
@@ -52,6 +76,15 @@ API_PORT=3001 npm run dev
 - `POLY_PROXY_ADDRESS` 係地址（funder/proxy），唔係私鑰；通常用喺 Magic/Proxy account routing。
 
 # 常見問題排障（必做 checklist）
+## 0) 本地完全打唔開（Dashboard/CryptoAll/All2 全部入唔到）
+1) 先確認 Web 係咪真係起咗（預設 Vite：`http://localhost:5173/`）
+2) 如果 `localhost:5173` 連唔到：
+   - 多數係未有喺 `FKPolyTools_Repo/web_front_src` 起 Web
+   - 或者 5173 被佔用，Vite 會自動轉用 5174/5175（要睇啟動 log 顯示嘅 URL）
+3) 如果你其實係喺另一部機/VM/容器起：
+   - `localhost` 只會指向你本機，所以必然打唔開
+   - 建議用 SSH port-forward，或者 Vite 用 `--host 0.0.0.0` 再用 `http://<機器IP>:5173/` 開
+
 ## A) 前端打 API 500 / WS 連唔到
 1) 先確認後端有冇起：
    - `curl -i http://localhost:3001/api/group-arb/crypto15m/status`
@@ -73,6 +106,11 @@ API_PORT=3001 npm run dev
 
 ## D) 下單失敗但 errorMsg 好長（例如成段 HTML）
 - 唔好貼整段 HTML 出嚟；只要提供頭 200-500 字、HTTP status、同出錯 endpoint。
+
+# Git 認證（push/pull 需要）
+- HTTPS：用 Personal Access Token（GitHub 唔再支援 password auth）
+- SSH：用 `ssh-keygen -t ed25519` 生成 key，將 `.pub` 加入 GitHub SSH keys
+- 唔好將 `.env`、私鑰、任何 secret 放入 git 或貼入 chat
 
 # 你回答時要輸出乜（固定格式）
 每次回覆請提供：

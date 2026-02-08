@@ -10,6 +10,7 @@ import { BuilderConfig } from '@polymarket/builder-signing-sdk';
 import { createWalletClient, http, encodeFunctionData, parseAbi, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { polygon } from 'viem/chains';
+import { computeAskDepthUsd } from '../utils/orderbook-depth.js';
 
 export interface GroupArbOpportunity {
     marketId: string;
@@ -1903,7 +1904,12 @@ export class GroupArbitrageScanner {
                     title: e?.marketQuestion,
                     conditionId,
                     outcome: e?.outcome,
+                    buySizingMode: e?.buySizingMode ?? null,
+                    requestedAmountUsd: e?.requestedAmountUsd ?? null,
                     amountUsd: e?.amountUsd,
+                    sizingDepthUsd: e?.sizingDepthUsd ?? null,
+                    sizingDepthCap: e?.sizingDepthCap ?? null,
+                    sizingAskLevelsUsed: e?.sizingAskLevelsUsed ?? null,
                     bestAsk: e?.bestAsk ?? e?.price ?? null,
                     limitPrice: e?.limitPrice ?? null,
                     orderId: res0?.orderId ?? res0?.id ?? e?.orderId ?? null,
@@ -4671,6 +4677,7 @@ export class GroupArbitrageScanner {
         }
     }
 
+
     private async refreshCrypto15mMarketSnapshot(): Promise<void> {
         if (this.crypto15mMarketInFlight) return this.crypto15mMarketInFlight;
         if (this.crypto15mMarketNextAllowedAtMs && Date.now() < this.crypto15mMarketNextAllowedAtMs) return;
@@ -6915,20 +6922,15 @@ export class GroupArbitrageScanner {
         const limitPrice = Math.min(0.999, Math.max(effectiveMinPrice, price) + 0.02);
         let amountUsdFinal = amountUsd;
         const buySizingMode = this.crypto15mAutoConfig.buySizingMode || 'fixed';
+        let sizingDepthUsd: number | null = null;
+        let sizingDepthCap: number | null = null;
+        let sizingAskLevelsUsed: number | null = null;
         if (buySizingMode !== 'fixed') {
-            let depthUsd = 0;
-            let count = 0;
-            for (const a of asks) {
-                if (count >= 10) break;
-                const p = Number(a?.price);
-                if (!Number.isFinite(p) || p <= 0) continue;
-                if (p > limitPrice) break;
-                const sz = Number(a?.size ?? a?.amount ?? a?.quantity);
-                if (!Number.isFinite(sz) || sz <= 0) continue;
-                depthUsd += sz * p;
-                count += 1;
-            }
-            const depthCap = depthUsd * 0.95;
+            const depth = computeAskDepthUsd({ asks, limitPrice, targetUsd: amountUsd, maxLevels: 200 });
+            const depthCap = depth.depthUsd * 0.95;
+            sizingDepthUsd = depth.depthUsd;
+            sizingDepthCap = depthCap;
+            sizingAskLevelsUsed = depth.levelsUsed;
             if (buySizingMode === 'orderbook_max') {
                 if (Number.isFinite(depthCap) && depthCap >= 1) {
                     amountUsdFinal = Math.max(1, Math.min(amountUsd, depthCap));
@@ -6991,7 +6993,12 @@ export class GroupArbitrageScanner {
             price: price,
             bestAsk: price,
             limitPrice,
+            buySizingMode,
+            requestedAmountUsd: amountUsd,
             amountUsd: amountUsdFinal,
+            sizingDepthUsd,
+            sizingDepthCap,
+            sizingAskLevelsUsed,
             results: [{ ...order, tokenId, outcome, conditionId }],
         };
         this.orderHistory.unshift(entry);
@@ -7008,7 +7015,12 @@ export class GroupArbitrageScanner {
             price: price,
             bestAsk: price,
             limitPrice,
+            buySizingMode,
+            requestedAmountUsd: amountUsd,
             amountUsd: amountUsdFinal,
+            sizingDepthUsd,
+            sizingDepthCap,
+            sizingAskLevelsUsed,
             source,
             orderId: order?.orderId ?? order?.id ?? null,
             order,
