@@ -47,6 +47,11 @@ curl -sS http://localhost:3001/api/group-arb/cryptoall/status | head
 curl -sS http://localhost:3001/api/group-arb/cryptoall2/status | head
 ```
 
+## 相關安裝文件
+
+- 本機安裝：`FKPolyTools_Repo/docs/INSTALL.md`
+- 固定安裝排障 Prompt：`FKPolyTools_Repo/docs/GPT_INSTALL_PROMPT.md`
+
 ## 安全提醒
 
 - 唔好將 `.env`、私鑰、relayer keys 入 git

@@ -648,7 +648,23 @@ function Crypto15m() {
                 return <a href={href} target="_blank" rel="noreferrer">{text}</a>;
             } },
             { title: 'Pick', dataIndex: 'outcome', key: 'outcome', width: 90, render: (v: any) => String(v || '') },
-            { title: 'Amount', dataIndex: 'amountUsd', key: 'amountUsd', width: 90, render: (v: any) => (v != null ? `$${Number(v).toFixed(0)}` : '-') },
+            { title: 'Amount', dataIndex: 'amountUsd', key: 'amountUsd', width: 120, render: (v: any, r: any) => {
+                const used = v != null ? Number(v) : NaN;
+                const req = r?.requestedAmountUsd != null ? Number(r.requestedAmountUsd) : NaN;
+                const mode = r?.buySizingMode != null ? String(r.buySizingMode) : '';
+                const depthCap = r?.sizingDepthCap != null ? Number(r.sizingDepthCap) : NaN;
+                const levels = r?.sizingAskLevelsUsed != null ? Number(r.sizingAskLevelsUsed) : NaN;
+                const showReq = Number.isFinite(req) && Number.isFinite(used) && Math.abs(req - used) >= 0.5;
+                const label = Number.isFinite(used) ? (showReq ? `$${req.toFixed(0)} → $${used.toFixed(0)}` : `$${used.toFixed(0)}`) : '-';
+                const tipLines = [
+                    Number.isFinite(req) ? `requested: $${req.toFixed(2)}` : null,
+                    Number.isFinite(used) ? `used: $${used.toFixed(2)}` : null,
+                    mode ? `mode: ${mode}` : null,
+                    Number.isFinite(depthCap) ? `depthCap: $${depthCap.toFixed(2)}` : null,
+                    Number.isFinite(levels) ? `askLevels: ${Math.floor(levels)}` : null,
+                ].filter(Boolean);
+                return tipLines.length ? <Tooltip title={<div style={{ whiteSpace: 'pre-line' }}>{tipLines.join('\n')}</div>}><span>{label}</span></Tooltip> : <span>{label}</span>;
+            } },
             { title: <Tooltip title="下單前從 CLOB /books 讀到的最低賣價（你買入的參考價）"><span>BestAsk</span></Tooltip>, dataIndex: 'bestAsk', key: 'bestAsk', width: 90, render: (v: any) => (v != null ? toCents(v) : '-') },
             { title: <Tooltip title="送單的最高買入價上限（FAK：能成交就成交，剩下直接取消）"><span>Limit</span></Tooltip>, dataIndex: 'limitPrice', key: 'limitPrice', width: 90, render: (v: any) => (v != null ? toCents(v) : '-') },
             { title: 'Order', dataIndex: 'orderStatus', key: 'orderStatus', width: 90, render: (v: any) => (v ? <Tag>{String(v)}</Tag> : '-') },
