@@ -183,6 +183,20 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         n: 20,
         lastIndex: 1,
     }));
+    const [deltaBoxAutoMeta, setDeltaBoxAutoMeta] = useState<Record<'BTC' | 'ETH' | 'SOL' | 'XRP', { value: number | null; appliedAt: string | null }>>(() => ({
+        BTC: { value: null, appliedAt: null },
+        ETH: { value: null, appliedAt: null },
+        SOL: { value: null, appliedAt: null },
+        XRP: { value: null, appliedAt: null },
+    }));
+    const [deltaBoxAutoConfirmEnabled, setDeltaBoxAutoConfirmEnabled] = useState(false);
+    const [deltaBoxAutoConfirmMinIntervalSec, setDeltaBoxAutoConfirmMinIntervalSec] = useState<number>(60);
+    const [deltaBoxAutoConfirmMinChangePct, setDeltaBoxAutoConfirmMinChangePct] = useState<number>(0);
+    const [deltaBoxAutoConfirmLastSavedAt, setDeltaBoxAutoConfirmLastSavedAt] = useState<string | null>(null);
+    const [deltaBoxAutoConfirmLastError, setDeltaBoxAutoConfirmLastError] = useState<string | null>(null);
+    const deltaBoxAutoConfirmLastSavedKeyRef = useRef<string>('');
+    const deltaBoxAutoConfirmLastSavedAtMsRef = useRef<number>(0);
+    const deltaBoxAutoConfirmInFlightRef = useRef<boolean>(false);
     const timerRef = useRef<any>(null);
     const timerHistoryRef = useRef<any>(null);
     const timerDeltaBoxRef = useRef<any>(null);
@@ -331,6 +345,54 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
             if (parsed?.adaptiveDeltaRevertNoBuyCount != null) setAdaptiveDeltaRevertNoBuyCount(Number(parsed.adaptiveDeltaRevertNoBuyCount));
             const allowedSyms = new Set(['BTC', 'ETH', 'SOL', 'XRP']);
             const allowedTfs = new Set(['5m', '15m', '1h', '4h', '1d']);
+            if (parsed?.deltaBoxViewMode != null) {
+                const v = String(parsed.deltaBoxViewMode);
+                setDeltaBoxViewMode(v === 'single' ? 'single' : 'grid');
+            }
+            if (parsed?.deltaBoxApplyBySymbol && typeof parsed.deltaBoxApplyBySymbol === 'object') {
+                const by = parsed.deltaBoxApplyBySymbol as any;
+                const next: any = {};
+                for (const sym of ['BTC', 'ETH', 'SOL', 'XRP']) {
+                    const row = by?.[sym];
+                    const enabled = row?.enabled != null ? !!row.enabled : false;
+                    const tf0 = String(row?.timeframe || '15m').toLowerCase();
+                    const timeframe = (allowedTfs.has(tf0) ? tf0 : '15m') as any;
+                    const mode0 = String(row?.mode || 'A');
+                    const mode = (mode0 === 'C' ? 'C' : mode0 === 'Manual' ? 'Manual' : 'A') as any;
+                    const n0 = Number(row?.n);
+                    const n = (n0 === 10 || n0 === 20 || n0 === 50) ? (n0 as any) : 20;
+                    const c0 = Number(row?.cIndex);
+                    const cIndex = (c0 === 1 || c0 === 2 || c0 === 3) ? (c0 as any) : 1;
+                    const pct0 = Number(row?.pct);
+                    const pct = Math.max(50, Math.min(200, Math.floor(Number.isFinite(pct0) ? pct0 : 100)));
+                    const mv0 = Number(row?.manualValue);
+                    const manualValue = Math.max(0, Number.isFinite(mv0) ? mv0 : 0);
+                    next[sym] = { enabled, timeframe, mode, n, cIndex, pct, manualValue };
+                }
+                setDeltaBoxApplyBySymbol(next);
+            }
+            if (parsed?.deltaBoxExpireApply && typeof parsed.deltaBoxExpireApply === 'object') {
+                const row = parsed.deltaBoxExpireApply as any;
+                const enabled = row?.enabled != null ? !!row.enabled : false;
+                const sym0 = String(row?.symbol || 'BTC').toUpperCase();
+                const symbol = (allowedSyms.has(sym0) ? sym0 : 'BTC') as any;
+                const tf0 = String(row?.timeframe || '15m').toLowerCase();
+                const timeframe = (allowedTfs.has(tf0) ? tf0 : '15m') as any;
+                const n0 = Number(row?.n);
+                const n = (n0 === 10 || n0 === 20 || n0 === 50) ? (n0 as any) : 20;
+                const li0 = Number(row?.lastIndex);
+                const lastIndex = (li0 === 1 || li0 === 2 || li0 === 3) ? (li0 as any) : 1;
+                setDeltaBoxExpireApply({ enabled, symbol, timeframe, n, lastIndex });
+            }
+            if (parsed?.deltaBoxAutoConfirmEnabled != null) setDeltaBoxAutoConfirmEnabled(!!parsed.deltaBoxAutoConfirmEnabled);
+            if (parsed?.deltaBoxAutoConfirmMinIntervalSec != null) {
+                const n = Math.max(5, Math.min(3600, Math.floor(Number(parsed.deltaBoxAutoConfirmMinIntervalSec) || 0)));
+                setDeltaBoxAutoConfirmMinIntervalSec(n);
+            }
+            if (parsed?.deltaBoxAutoConfirmMinChangePct != null) {
+                const n = Math.max(0, Math.min(100, Number(parsed.deltaBoxAutoConfirmMinChangePct) || 0));
+                setDeltaBoxAutoConfirmMinChangePct(n);
+            }
             const persistedSymbolsRaw = Array.isArray(parsed?.allSymbols)
                 ? parsed.allSymbols
                 : (parsed?.allSymbol != null ? [parsed.allSymbol] : []);
@@ -385,10 +447,16 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 adaptiveDeltaRevertNoBuyCount,
                 allSymbols,
                 allTimeframes,
+                deltaBoxViewMode,
+                deltaBoxApplyBySymbol,
+                deltaBoxExpireApply,
+                deltaBoxAutoConfirmEnabled,
+                deltaBoxAutoConfirmMinIntervalSec,
+                deltaBoxAutoConfirmMinChangePct,
             }));
         } catch {
         }
-    }, [settingsHydrated, minProb, expiresWithinSec, expiresWithinSecByTimeframe, amountUsd, buySizingMode, sweepEnabled, sweepWindowSec, sweepMaxOrdersPerMarket, sweepMaxTotalUsdPerMarket, sweepMinIntervalMs, trendEnabled, trendMinutes, staleMsThreshold, pollMs, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta, cryptoAllDeltaByTimeframe, stoplossEnabled, stoplossCut1DropCents, stoplossCut1SellPct, stoplossCut2DropCents, stoplossCut2SellPct, stoplossMinSecToExit, adaptiveDeltaEnabled, adaptiveDeltaBigMoveMultiplier, adaptiveDeltaRevertNoBuyCount, allSymbols.join(','), allTimeframes.join(',')]);
+    }, [settingsHydrated, minProb, expiresWithinSec, expiresWithinSecByTimeframe, amountUsd, buySizingMode, sweepEnabled, sweepWindowSec, sweepMaxOrdersPerMarket, sweepMaxTotalUsdPerMarket, sweepMinIntervalMs, trendEnabled, trendMinutes, staleMsThreshold, pollMs, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta, cryptoAllDeltaByTimeframe, stoplossEnabled, stoplossCut1DropCents, stoplossCut1SellPct, stoplossCut2DropCents, stoplossCut2SellPct, stoplossMinSecToExit, adaptiveDeltaEnabled, adaptiveDeltaBigMoveMultiplier, adaptiveDeltaRevertNoBuyCount, allSymbols.join(','), allTimeframes.join(','), deltaBoxViewMode, deltaBoxExpireApply, deltaBoxApplyBySymbol, deltaBoxAutoConfirmEnabled, deltaBoxAutoConfirmMinIntervalSec, deltaBoxAutoConfirmMinChangePct]);
 
     useEffect(() => {
         if (variant !== 'all') return;
@@ -1023,7 +1091,6 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         if (timerDeltaBoxRef.current) clearInterval(timerDeltaBoxRef.current);
         const run = () => {
             if (!autoRefresh) return;
-            if (editing) return;
             fetchDeltaBox().catch(() => {});
         };
         run();
@@ -1031,7 +1098,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         return () => {
             if (timerDeltaBoxRef.current) clearInterval(timerDeltaBoxRef.current);
         };
-    }, [apiPath, autoRefresh, editing, variant, allSymbols.join(','), allTimeframes.join(',')]);
+    }, [apiPath, autoRefresh, variant, allSymbols.join(','), allTimeframes.join(',')]);
 
     useEffect(() => {
         fetchHistory().catch(() => {});
@@ -1561,36 +1628,49 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         return String(Math.max(0, Math.round(n)));
     };
 
+    const getDeltaBoxRow = (sym: string, tf: string) => deltaBoxMap.get(`${String(sym || '').toUpperCase()}:${String(tf || '').toLowerCase()}`) || null;
+    const pickA = (row: any, n: 10 | 20 | 50) => {
+        const k = n === 10 ? 'avg10' : n === 20 ? 'avg20' : 'avg50';
+        return row?.a?.[k];
+    };
+    const pickB = (row: any, n: 10 | 20 | 50, idx: 1 | 2 | 3) => {
+        const k = n === 10 ? 'avg10' : n === 20 ? 'avg20' : 'avg50';
+        const kk = idx === 1 ? 'last1' : idx === 2 ? 'last2' : 'last3';
+        return row?.b?.[k]?.[kk];
+    };
+    const pickC = (row: any, n: 10 | 20 | 50, idx: 1 | 2 | 3) => {
+        const k = n === 10 ? 'avg10' : n === 20 ? 'avg20' : 'avg50';
+        const kk = idx === 1 ? 'last1' : idx === 2 ? 'last2' : 'last3';
+        return row?.c?.[k]?.[kk];
+    };
+    const computeDeltaBoxAutoValue = (sym: 'BTC' | 'ETH' | 'SOL' | 'XRP', cfg: any) => {
+        const enabled = cfg?.enabled === true;
+        if (!enabled) return null;
+        const tf = String(cfg?.timeframe || '15m').toLowerCase();
+        const mode = String(cfg?.mode || 'A');
+        const n = (cfg?.n === 10 || cfg?.n === 20 || cfg?.n === 50) ? cfg.n : 20;
+        const cIndex = (cfg?.cIndex === 1 || cfg?.cIndex === 2 || cfg?.cIndex === 3) ? cfg.cIndex : 1;
+        const pct = Math.max(50, Math.min(200, Number(cfg?.pct ?? 100)));
+        const row = getDeltaBoxRow(sym, tf);
+        const raw = mode === 'Manual'
+            ? cfg?.manualValue
+            : (row ? (mode === 'A' ? pickA(row, n) : pickC(row, n, cIndex)) : null);
+        const v = Number(raw) * (pct / 100);
+        if (!Number.isFinite(v) || v <= 0) return null;
+        return { value: Math.max(0, v), timeframe: tf as any, mode: mode as any };
+    };
+
     const applyDeltaBoxSelections = () => {
         let applied = 0;
-        const getRow = (sym: string, tf: string) => deltaBoxMap.get(`${sym}:${tf}`) || null;
-        const pickA = (row: any, n: 10 | 20 | 50) => {
-            const k = n === 10 ? 'avg10' : n === 20 ? 'avg20' : 'avg50';
-            return row?.a?.[k];
-        };
-        const pickB = (row: any, n: 10 | 20 | 50, idx: 1 | 2 | 3) => {
-            const k = n === 10 ? 'avg10' : n === 20 ? 'avg20' : 'avg50';
-            const kk = idx === 1 ? 'last1' : idx === 2 ? 'last2' : 'last3';
-            return row?.b?.[k]?.[kk];
-        };
-        const pickC = (row: any, n: 10 | 20 | 50, idx: 1 | 2 | 3) => {
-            const k = n === 10 ? 'avg10' : n === 20 ? 'avg20' : 'avg50';
-            const kk = idx === 1 ? 'last1' : idx === 2 ? 'last2' : 'last3';
-            return row?.c?.[k]?.[kk];
-        };
         const nextAllByTf: any = variant === 'all' ? { ...cryptoAllDeltaByTimeframe } : null;
         for (const sym of ['BTC', 'ETH', 'SOL', 'XRP']) {
             const cfg = deltaBoxApplyBySymbol[sym];
             if (!cfg?.enabled) continue;
-            const row = getRow(sym, cfg.timeframe);
-            const raw = cfg.mode === 'Manual'
-                ? cfg.manualValue
-                : (row ? (cfg.mode === 'A' ? pickA(row, cfg.n) : pickC(row, cfg.n, cfg.cIndex)) : null);
-            const pct = Math.max(50, Math.min(200, Number(cfg.pct ?? 100)));
-            const n = Number(raw) * (pct / 100);
-            if (!Number.isFinite(n) || n <= 0) continue;
+            const computed = computeDeltaBoxAutoValue(sym as any, cfg);
+            if (!computed) continue;
+            const n = computed.value;
             if (variant === 'all') {
-                const tf = cfg.timeframe;
+                const tf = computed.timeframe;
                 const prevRow = nextAllByTf[tf] || {};
                 nextAllByTf[tf] = {
                     ...prevRow,
@@ -1609,7 +1689,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         }
         if (variant === 'all' && nextAllByTf) setCryptoAllDeltaByTimeframe(nextAllByTf);
         if (deltaBoxExpireApply.enabled) {
-            const row = getRow(deltaBoxExpireApply.symbol, deltaBoxExpireApply.timeframe);
+            const row = getDeltaBoxRow(deltaBoxExpireApply.symbol, deltaBoxExpireApply.timeframe);
             const raw = row ? pickB(row, deltaBoxExpireApply.n, deltaBoxExpireApply.lastIndex) : null;
             const s = Number(raw);
             if (Number.isFinite(s) && s > 0) {
@@ -1625,6 +1705,155 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         if (applied) message.success(`Applied ${applied}`);
         else message.warning('No applicable values');
     };
+
+    useEffect(() => {
+        if (!settingsHydrated) return;
+        if (!deltaBoxData) return;
+        const appliedAt = new Date().toISOString();
+        const nextMeta: any = {};
+        const updates: Array<{ sym: 'BTC' | 'ETH' | 'SOL' | 'XRP'; timeframe: '5m' | '15m' | '1h' | '4h' | '1d'; value: number }> = [];
+        for (const sym of ['BTC', 'ETH', 'SOL', 'XRP'] as const) {
+            const cfg = deltaBoxApplyBySymbol[sym];
+            const computed = computeDeltaBoxAutoValue(sym, cfg);
+            if (!computed) continue;
+            const tf = computed.timeframe as any;
+            const v = computed.value;
+            updates.push({ sym, timeframe: tf, value: v });
+            nextMeta[sym] = { value: v, appliedAt };
+        }
+        if (updates.length) {
+            if (variant === 'all') {
+                const nextAll: any = { ...cryptoAllDeltaByTimeframe };
+                for (const u of updates) {
+                    const prevRow = nextAll[u.timeframe] || cryptoAllDeltaByTimeframe[u.timeframe] || {};
+                    nextAll[u.timeframe] = {
+                        ...prevRow,
+                        btcMinDelta: u.sym === 'BTC' ? u.value : Number(prevRow.btcMinDelta),
+                        ethMinDelta: u.sym === 'ETH' ? u.value : Number(prevRow.ethMinDelta),
+                        solMinDelta: u.sym === 'SOL' ? u.value : Number(prevRow.solMinDelta),
+                        xrpMinDelta: u.sym === 'XRP' ? u.value : Number(prevRow.xrpMinDelta),
+                    };
+                }
+                setCryptoAllDeltaByTimeframe(nextAll);
+            } else {
+                let nextBtc = btcMinDelta;
+                let nextEth = ethMinDelta;
+                let nextSol = solMinDelta;
+                let nextXrp = xrpMinDelta;
+                for (const u of updates) {
+                    if (u.sym === 'BTC') nextBtc = u.value;
+                    if (u.sym === 'ETH') nextEth = u.value;
+                    if (u.sym === 'SOL') nextSol = u.value;
+                    if (u.sym === 'XRP') nextXrp = u.value;
+                }
+                setBtcMinDelta(nextBtc);
+                setEthMinDelta(nextEth);
+                setSolMinDelta(nextSol);
+                setXrpMinDelta(nextXrp);
+            }
+            setDeltaBoxAutoMeta((prev) => ({ ...prev, ...nextMeta }));
+
+            if (deltaBoxAutoConfirmEnabled && !deltaBoxAutoConfirmInFlightRef.current) {
+                const nowMs = Date.now();
+                const minIntervalMs = Math.max(5_000, Math.floor(Math.max(5, Number(deltaBoxAutoConfirmMinIntervalSec) || 60) * 1000));
+                if ((nowMs - (deltaBoxAutoConfirmLastSavedAtMsRef.current || 0)) >= minIntervalMs) {
+                    const endpoint = variant === 'all' ? '/group-arb/cryptoall/delta-thresholds' : '/group-arb/crypto15m/delta-thresholds';
+                    const payload: any = variant === 'all'
+                        ? { byTimeframe: (() => {
+                            const nextAll: any = { ...cryptoAllDeltaByTimeframe };
+                            for (const u of updates) {
+                                const prevRow = nextAll[u.timeframe] || cryptoAllDeltaByTimeframe[u.timeframe] || {};
+                                nextAll[u.timeframe] = {
+                                    ...prevRow,
+                                    btcMinDelta: u.sym === 'BTC' ? u.value : Number(prevRow.btcMinDelta),
+                                    ethMinDelta: u.sym === 'ETH' ? u.value : Number(prevRow.ethMinDelta),
+                                    solMinDelta: u.sym === 'SOL' ? u.value : Number(prevRow.solMinDelta),
+                                    xrpMinDelta: u.sym === 'XRP' ? u.value : Number(prevRow.xrpMinDelta),
+                                };
+                            }
+                            return nextAll;
+                        })() }
+                        : (() => {
+                            let nextBtc = btcMinDelta;
+                            let nextEth = ethMinDelta;
+                            let nextSol = solMinDelta;
+                            let nextXrp = xrpMinDelta;
+                            for (const u of updates) {
+                                if (u.sym === 'BTC') nextBtc = u.value;
+                                if (u.sym === 'ETH') nextEth = u.value;
+                                if (u.sym === 'SOL') nextSol = u.value;
+                                if (u.sym === 'XRP') nextXrp = u.value;
+                            }
+                            return { btcMinDelta: nextBtc, ethMinDelta: nextEth, solMinDelta: nextSol, xrpMinDelta: nextXrp };
+                        })();
+                    const payloadKey = JSON.stringify({ endpoint, payload });
+                    const prevKey = deltaBoxAutoConfirmLastSavedKeyRef.current;
+                    const minChangePct = Math.max(0, Math.min(100, Number(deltaBoxAutoConfirmMinChangePct) || 0));
+                    let changeOk = true;
+                    if (minChangePct > 0 && prevKey) {
+                        try {
+                            const prevParsed = JSON.parse(prevKey);
+                            const prevPayload = prevParsed?.payload || null;
+                            const curPayload = payload;
+                            const extract = (p: any) => {
+                                if (!p) return {};
+                                if (p.byTimeframe && typeof p.byTimeframe === 'object') return p.byTimeframe;
+                                return p;
+                            };
+                            const pp: any = extract(prevPayload);
+                            const cp: any = extract(curPayload);
+                            let maxPct = 0;
+                            const walk = (a: any, b: any, prefix: string) => {
+                                if (a && typeof a === 'object' && !Array.isArray(a)) {
+                                    for (const k of Object.keys(a)) walk(a[k], b ? b[k] : undefined, `${prefix}${k}.`);
+                                    return;
+                                }
+                                const na = Number(a);
+                                const nb = Number(b);
+                                if (!Number.isFinite(na) || !Number.isFinite(nb)) return;
+                                const denom = Math.max(1e-9, Math.abs(na));
+                                const pct = Math.abs((nb - na) / denom) * 100;
+                                if (pct > maxPct) maxPct = pct;
+                            };
+                            walk(pp, cp, '');
+                            changeOk = maxPct >= minChangePct;
+                        } catch {
+                            changeOk = true;
+                        }
+                    }
+                    if (payloadKey !== prevKey && changeOk) {
+                        deltaBoxAutoConfirmInFlightRef.current = true;
+                        setDeltaBoxAutoConfirmLastError(null);
+                        apiPost('delta_box_auto_confirm', endpoint, payload).then(async () => {
+                            deltaBoxAutoConfirmLastSavedAtMsRef.current = Date.now();
+                            deltaBoxAutoConfirmLastSavedKeyRef.current = payloadKey;
+                            setDeltaBoxAutoConfirmLastSavedAt(new Date().toISOString());
+                            await fetchThresholds().catch(() => {});
+                            if (allSettingsOpen || variant === 'all') await fetchCryptoAllThresholdsForModal().catch(() => {});
+                        }).catch((e: any) => {
+                            const msg = e?.response?.data?.error || e?.message || String(e);
+                            setDeltaBoxAutoConfirmLastError(String(msg));
+                        }).finally(() => {
+                            deltaBoxAutoConfirmInFlightRef.current = false;
+                        });
+                    }
+                }
+            }
+        }
+        if (deltaBoxExpireApply.enabled) {
+            const row = getDeltaBoxRow(deltaBoxExpireApply.symbol, deltaBoxExpireApply.timeframe);
+            const raw = row ? pickB(row, deltaBoxExpireApply.n, deltaBoxExpireApply.lastIndex) : null;
+            const s = Number(raw);
+            if (Number.isFinite(s) && s > 0) {
+                if (variant === 'all') {
+                    const tf = deltaBoxExpireApply.timeframe;
+                    setExpiresWithinSecByTimeframe((p) => ({ ...p, [tf]: Math.max(10, Math.min(3600, Math.floor(s))) }));
+                } else {
+                    setExpiresWithinSec(Math.max(10, Math.min(300, Math.floor(s))));
+                }
+            }
+        }
+    }, [settingsHydrated, deltaBoxData, deltaBoxApplyBySymbol, deltaBoxExpireApply, variant, deltaBoxAutoConfirmEnabled, deltaBoxAutoConfirmMinIntervalSec, deltaBoxAutoConfirmMinChangePct, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta, cryptoAllDeltaByTimeframe, allSettingsOpen]);
 
     return (
         <div>
@@ -1974,6 +2203,9 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                                         View All
                                     </Button>
                                 </Space>
+                                <div style={{ marginTop: 6, color: '#666', fontSize: 12 }}>
+                                    Saved = 後端檔案；Auto-Apply 只會動態更新 Draft（未 Save 前唔會改 Saved）。
+                                </div>
                                 <div style={{ marginTop: 6 }}>
                                     <Space wrap>
                                         <Text strong style={{ color: '#888' }}>Expiry（Saved→Draft）:</Text>
@@ -2140,6 +2372,33 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                                         <Button icon={<ReloadOutlined />} onClick={() => fetchDeltaBox().catch(() => {})} loading={deltaBoxLoading} size="small">
                                             Refresh Stats
                                         </Button>
+                                        <Checkbox checked={deltaBoxAutoConfirmEnabled} onChange={(e) => setDeltaBoxAutoConfirmEnabled(e.target.checked)}>
+                                            Auto-Confirm
+                                        </Checkbox>
+                                        <span style={{ color: '#888', fontSize: 12 }}>min(s)</span>
+                                        <InputNumber
+                                            size="small"
+                                            min={5}
+                                            max={3600}
+                                            step={5}
+                                            value={deltaBoxAutoConfirmMinIntervalSec}
+                                            onChange={(v) => setDeltaBoxAutoConfirmMinIntervalSec(Math.max(5, Math.min(3600, Math.floor(Number(v) || 60))))}
+                                            style={{ width: 86 }}
+                                        />
+                                        <span style={{ color: '#888', fontSize: 12 }}>chg%</span>
+                                        <InputNumber
+                                            size="small"
+                                            min={0}
+                                            max={100}
+                                            step={0.5}
+                                            value={deltaBoxAutoConfirmMinChangePct}
+                                            onChange={(v) => setDeltaBoxAutoConfirmMinChangePct(Math.max(0, Math.min(100, Number(v) || 0)))}
+                                            style={{ width: 78 }}
+                                        />
+                                        <span style={{ color: '#666', fontSize: 12 }}>
+                                            savedAt: {deltaBoxAutoConfirmLastSavedAt ? String(deltaBoxAutoConfirmLastSavedAt).replace('T', ' ').replace('Z', '') : '-'}
+                                        </span>
+                                        {deltaBoxAutoConfirmLastError ? <Tag color="red">{String(deltaBoxAutoConfirmLastError).slice(0, 60)}</Tag> : null}
                                         <Button type="primary" onClick={applyDeltaBoxSelections} disabled={!deltaBoxData} size="small">
                                             Apply Selected to Settings
                                         </Button>
@@ -2154,10 +2413,13 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                                         <span style={{ color: '#888', fontSize: 12, width: 90 }}>%</span>
                                         <span style={{ color: '#888', fontSize: 12, width: 100 }}>Sample</span>
                                         <span style={{ color: '#888', fontSize: 12, width: 120 }}>Manual</span>
+                                        <span style={{ color: '#888', fontSize: 12, width: 120 }}>Live</span>
+                                        <span style={{ color: '#888', fontSize: 12, width: 180 }}>AppliedAt</span>
                                     </Space>
                                     {(['BTC', 'ETH', 'SOL', 'XRP'] as const).map((sym) => {
                                         const cfg = deltaBoxApplyBySymbol[sym] || { enabled: false, timeframe: '15m', mode: 'A', n: 20, cIndex: 1, pct: 100, manualValue: 0 };
                                         const update = (patch: any) => setDeltaBoxApplyBySymbol((prev) => ({ ...prev, [sym]: { ...prev[sym], ...patch } }));
+                                        const meta = deltaBoxAutoMeta[sym] || { value: null, appliedAt: null };
                                         return (
                                             <Space key={sym} wrap style={{ padding: '4px 8px', borderBottom: '1px solid #333', width: '100%' }}>
                                                 <Checkbox checked={cfg.enabled} onChange={(e) => update({ enabled: e.target.checked })} style={{ width: 60 }}>{sym}</Checkbox>
@@ -2213,6 +2475,8 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                                                     />
                                                 )}
                                                 {cfg.mode !== 'Manual' ? <span style={{ width: 120 }} /> : null}
+                                                <span style={{ width: 120, color: '#ddd', fontSize: 12 }}>{meta.value != null ? fmtNum(meta.value) : '-'}</span>
+                                                <span style={{ width: 180, color: '#666', fontSize: 11 }}>{meta.appliedAt ? String(meta.appliedAt).replace('T', ' ').replace('Z', '') : '-'}</span>
                                             </Space>
                                         );
                                     })}
