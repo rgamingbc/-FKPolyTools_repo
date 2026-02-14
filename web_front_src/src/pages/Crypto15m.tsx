@@ -4,6 +4,7 @@ import { PlayCircleOutlined, PauseCircleOutlined, ReloadOutlined, ShoppingCartOu
 import axios from 'axios';
 import { createChart } from 'lightweight-charts';
 import { useAccountApiPath } from '../api/apiPath';
+import { WEB_VERSION } from '../version';
 
 const { Title, Text } = Typography;
 
@@ -1097,6 +1098,28 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         ]);
     };
 
+    const testApi = useCallback(async () => {
+        try {
+            const candEndpoint = '/group-arb/cryptoall/candidates';
+            const hist15Endpoint = '/group-arb/crypto15m/history';
+            const histAllEndpoint = '/group-arb/cryptoall/history';
+            const symbols = allSymbols.length ? allSymbols.join(',') : 'BTC,ETH,SOL,XRP';
+            const timeframes = allTimeframes.length ? allTimeframes.join(',') : '5m,15m,1h,4h,1d';
+            const [candRes, h15Res, hAllRes] = await Promise.all([
+                apiGet('test_cand_all', candEndpoint, { params: { symbols, timeframes, minProb, expiresWithinSec, limit: 25 } }),
+                apiGet('test_hist_15', hist15Endpoint, { params: { refresh: true, intervalMs: 1000, maxEntries: 50, includeSkipped: true } }),
+                apiGet('test_hist_all', histAllEndpoint, { params: { refresh: true, intervalMs: 1000, maxEntries: 50, includeSkipped: true } }),
+            ]);
+            const candCount = Array.isArray(candRes.data?.candidates) ? candRes.data.candidates.length : 0;
+            const h15Count = Array.isArray(h15Res.data?.history) ? h15Res.data.history.length : 0;
+            const hAllCount = Array.isArray(hAllRes.data?.history) ? hAllRes.data.history.length : 0;
+            message.success(`API OK cand=${candCount} hist15=${h15Count} histAll=${hAllCount}`);
+        } catch (e: any) {
+            const msg = e?.response?.data?.error || e?.message || String(e);
+            message.error(String(msg));
+        }
+    }, [apiGet, allSymbols.join(','), allTimeframes.join(','), minProb, expiresWithinSec]);
+
     useEffect(() => {
         for (const c of abortersRef.current.values()) {
             try { c.abort(); } catch {}
@@ -1941,7 +1964,12 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     return (
         <div>
             <Title level={3} style={{ color: '#fff', marginBottom: 16 }}>
-                {pageTitle}
+                <Space wrap>
+                    <span>{pageTitle}</span>
+                    <Tag color="purple">web:{WEB_VERSION}</Tag>
+                    <Tag color="geekblue">build:static-FKPolyTools_Repo</Tag>
+                    <Tag color="gold">variant:{variant}</Tag>
+                </Space>
             </Title>
 
             {variant === 'all' ? (
@@ -1979,6 +2007,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                                 { value: 'XRP', label: 'XRP' },
                             ]}
                         />
+                        <Button onClick={testApi}>Test API</Button>
                     </Space>
                 </Card>
             ) : null}
@@ -2725,6 +2754,17 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
 
             {variant !== 'all' || (allSymbols.length && allTimeframes.length) ? (
                 <Card style={{ background: '#1f1f1f', border: '1px solid #333' }}>
+                    <div style={{ marginBottom: 10 }}>
+                        <Space wrap>
+                            <Tag color="geekblue">Candidates</Tag>
+                            <Tag>OK: {candidatesLastOkAt ? String(candidatesLastOkAt).replace('T', ' ').replace('Z', '') : '-'}</Tag>
+                            <Tag>ms: {candidatesLastDurationMs != null ? String(Math.max(0, Math.floor(Number(candidatesLastDurationMs)))) : '-'}</Tag>
+                            <Tag>syms: {(allSymbols && allSymbols.length) ? allSymbols.join(',') : '-'}</Tag>
+                            <Tag>tfs: {(allTimeframes && allTimeframes.length) ? allTimeframes.join(',') : '-'}</Tag>
+                            <Tag>rows: {Array.isArray(candidates) ? candidates.length : 0}</Tag>
+                        </Space>
+                        {candidatesLastError ? <Alert style={{ marginTop: 8 }} type="error" showIcon message={String(candidatesLastError)} /> : null}
+                    </div>
                     <Table
                         className="compact-antd-table"
                         rowKey={(r) => {
@@ -2746,6 +2786,16 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
 
             <Card style={{ marginTop: 16, background: '#1f1f1f', border: '1px solid #333' }}>
                 <Title level={5} style={{ color: '#fff', marginBottom: 12 }}>Recent History</Title>
+                <div style={{ marginBottom: 10 }}>
+                    <Space wrap>
+                        <Tag color="geekblue">History</Tag>
+                        <Tag>mode: {historyStrategy}</Tag>
+                        <Tag>OK: {historyLastOkAt ? String(historyLastOkAt).replace('T', ' ').replace('Z', '') : '-'}</Tag>
+                        <Tag>ms: {historyLastDurationMs != null ? String(Math.max(0, Math.floor(Number(historyLastDurationMs)))) : '-'}</Tag>
+                        <Tag>rows: {Array.isArray(historyView) ? historyView.length : 0}</Tag>
+                    </Space>
+                    {historyLastError ? <Alert style={{ marginTop: 8 }} type="error" showIcon message={String(historyLastError)} /> : null}
+                </div>
                 <Collapse
                     ghost
                     style={{ marginBottom: 12 }}
