@@ -11433,7 +11433,7 @@ export class GroupArbitrageScanner {
             acc[tf] = Math.max(10, Math.floor(Number.isFinite(v) ? v : expiresWithinSec));
             return acc;
         }, {}) as Record<'5m' | '15m' | '1h' | '4h' | '1d', number>;
-        const limit = Math.max(1, Math.min(100, Math.floor(Number.isFinite(limitRaw) ? limitRaw : 20)));
+        const limit = Math.max(1, Math.min(100, Math.floor(Number.isFinite(limitRaw) ? limitRaw : 50)));
 
         const now = Date.now();
         const marketAt = this.cryptoAllMarketSnapshot.atMs ? Number(this.cryptoAllMarketSnapshot.atMs) : 0;
@@ -11661,7 +11661,7 @@ export class GroupArbitrageScanner {
             const candidates = await this.getCryptoAllCandidates({
                 minProb: this.cryptoAllAutoConfig.minProb,
                 expiresWithinSec: this.cryptoAllAutoConfig.expiresWithinSec,
-                limit: 5,
+                limit: 50,
                 symbols: this.cryptoAllAutoConfig.symbols,
             }).catch(() => []);
             this.cryptoAllLastScanAt = new Date().toISOString();

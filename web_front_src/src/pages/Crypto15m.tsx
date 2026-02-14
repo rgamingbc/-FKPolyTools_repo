@@ -421,7 +421,12 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 .map((x: any) => String(x || '').toLowerCase())
                 .filter((x: any) => allowedTfs.has(x));
             setAllSymbols((persistedSymbols.length ? persistedSymbols : ['BTC', 'ETH', 'SOL', 'XRP']) as any);
-            setAllTimeframes((persistedTimeframes.length ? persistedTimeframes : ['15m', '1h', '4h', '1d']) as any);
+            
+            let nextTfs = persistedTimeframes.length ? persistedTimeframes : ['15m', '1h', '4h', '1d'];
+            if (String(pageTitle || '').includes('15M') && !nextTfs.includes('15m')) {
+                nextTfs = [...nextTfs, '15m'];
+            }
+            setAllTimeframes(nextTfs as any);
         } catch {
         } finally {
             setSettingsHydrated(true);
@@ -632,12 +637,11 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 const merged = sortCandidates(Array.from(sticky.values()));
                 const count = Number(rr.data?.count ?? sorted.length);
                 const eligible = Number(sorted.filter((c: any) => c?.meetsMinProb === true && c?.eligibleByExpiry === true).length);
-                const nextSig = merged.slice(0, 120).map((r: any) => `${String(r?.timeframe || '')}:${String(r?.conditionId || '')}:${String(r?.slug || '')}:${String(r?.symbol || '')}:${String(r?.secondsToExpire ?? '')}:${String(r?.chosenPrice ?? '')}:${r?.meetsMinProb === true ? 1 : 0}:${r?.eligibleByExpiry === true ? 1 : 0}`).join('|');
+                const nextSig = merged.slice(0, 120).map((r: any) => `${String(r?.timeframe || '')}:${String(r?.conditionId || '')}:${String(r?.slug || '')}:${String(r?.symbol || '')}:${String(r?.chosenPrice ?? '')}:${r?.meetsMinProb === true ? 1 : 0}:${r?.eligibleByExpiry === true ? 1 : 0}`).join('|');
                 const nextMetaSig = `${count}:${eligible}`;
-                if (nextSig !== candidatesSigRef.current) {
-                    candidatesSigRef.current = nextSig;
-                    startTransition(() => setCandidates(merged));
-                }
+                // Force update without sig check
+                setCandidates(merged);
+                candidatesSigRef.current = nextSig;
                 if (nextMetaSig !== candidatesMetaSigRef.current) {
                     candidatesMetaSigRef.current = nextMetaSig;
                     setCandidatesMeta({ count, eligible });
@@ -660,13 +664,12 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
             const sorted = sortCandidates(list);
             const count = Number(res.data?.count ?? sorted.length);
             const eligible = Number(res.data?.countEligible ?? sorted.filter((c: any) => c?.meetsMinProb === true && c?.eligibleByExpiry === true).length);
-            const nextSig = sorted.slice(0, 60).map((r: any) => `${String(r?.conditionId || '')}:${String(r?.secondsToExpire ?? '')}:${String(r?.chosenPrice ?? '')}:${r?.meetsMinProb === true ? 1 : 0}:${r?.eligibleByExpiry === true ? 1 : 0}`).join('|');
+            const nextSig = sorted.slice(0, 60).map((r: any) => `${String(r?.conditionId || '')}:${String(r?.chosenPrice ?? '')}:${r?.meetsMinProb === true ? 1 : 0}:${r?.eligibleByExpiry === true ? 1 : 0}`).join('|');
             const nextMetaSig = `${count}:${eligible}`;
-            if (nextSig !== candidatesSigRef.current) {
+                // Force update without sig check
+                setCandidates(sorted);
                 candidatesSigRef.current = nextSig;
-                startTransition(() => setCandidates(sorted));
-            }
-            if (nextMetaSig !== candidatesMetaSigRef.current) {
+                if (nextMetaSig !== candidatesMetaSigRef.current) {
                 candidatesMetaSigRef.current = nextMetaSig;
                 setCandidatesMeta({ count, eligible });
             }
@@ -708,7 +711,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const fetchHistory = async () => {
         if (historyInFlightRef.current) return;
         historyInFlightRef.current = true;
-        setHistoryLoading(true);
+        if (!history.length) setHistoryLoading(true);
         const t0 = Date.now();
         setHistoryLastError(null);
         try {
@@ -720,10 +723,9 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 const nextSummary = res.data?.summary || null;
                 const nextConfig = Array.isArray(res.data?.configEvents) ? res.data.configEvents : [];
                 const nextMetaSig = `${String(nextSummary?.count ?? '')}:${String(nextSummary?.pnlTotalUsdc ?? '')}:${String(nextConfig.length)}`;
-                if (nextSig !== historySigRef.current) {
-                    historySigRef.current = nextSig;
-                    startTransition(() => setHistory(nextHistory));
-                }
+                // Force update without sig check
+                setHistory(nextHistory);
+                historySigRef.current = nextSig;
                 if (nextMetaSig !== historyMetaSigRef.current) {
                     historyMetaSigRef.current = nextMetaSig;
                     setHistorySummary(nextSummary);
@@ -764,6 +766,13 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 const tb = Date.parse(String(b?.timestamp || '')) || 0;
                 return tb - ta;
             }).slice(0, 80);
+            
+            // Fallback for missing ID in composite view
+            const mergedWithId = merged.map((x: any, i: number) => ({
+                ...x,
+                _ui_id: x.id || `virtual-${i}-${Date.now()}`
+            }));
+
             const s15 = r15.data?.summary || {};
             const sAll = rAll.data?.summary || {};
             const sum = {
@@ -780,13 +789,12 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 filledUsd1h: Number(s15.filledUsd1h || 0) + Number(sAll.filledUsd1h || 0),
             };
             (sum as any).fillRate1h = Number(sum.totalOrders1h || 0) > 0 ? (Number(sum.filledOrders1h || 0) / Number(sum.totalOrders1h || 0)) : 0;
-            const nextSig = merged.slice(0, 120).map((x: any) => `${String(x?.strategy ?? '')}:${String(x?.id ?? '')}:${String(x?.orderStatus ?? '')}:${String(x?.filledSize ?? '')}:${String(x?.result ?? '')}:${String(x?.state ?? '')}`).join('|');
+            const nextSig = mergedWithId.slice(0, 120).map((x: any) => `${String(x?.strategy ?? '')}:${String(x?.id ?? '')}:${String(x?.orderStatus ?? '')}:${String(x?.filledSize ?? '')}:${String(x?.result ?? '')}:${String(x?.state ?? '')}`).join('|');
             const nextConfig = Array.isArray(r15.data?.configEvents) ? r15.data.configEvents : [];
             const nextMetaSig = `${String(sum.count)}:${String(sum.pnlTotalUsdc)}:${String(nextConfig.length)}`;
-            if (nextSig !== historySigRef.current) {
-                historySigRef.current = nextSig;
-                startTransition(() => setHistory(merged));
-            }
+            // Force update without sig check
+            setHistory(mergedWithId);
+            historySigRef.current = nextSig;
             if (nextMetaSig !== historyMetaSigRef.current) {
                 historyMetaSigRef.current = nextMetaSig;
                 setHistorySummary(sum);
@@ -2762,6 +2770,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                             <Tag>syms: {(allSymbols && allSymbols.length) ? allSymbols.join(',') : '-'}</Tag>
                             <Tag>tfs: {(allTimeframes && allTimeframes.length) ? allTimeframes.join(',') : '-'}</Tag>
                             <Tag>rows: {Array.isArray(candidates) ? candidates.length : 0}</Tag>
+                            <Tag color="magenta">Debug: {candidates?.length}</Tag>
                         </Space>
                         {candidatesLastError ? <Alert style={{ marginTop: 8 }} type="error" showIcon message={String(candidatesLastError)} /> : null}
                     </div>
@@ -2793,6 +2802,9 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                         <Tag>OK: {historyLastOkAt ? String(historyLastOkAt).replace('T', ' ').replace('Z', '') : '-'}</Tag>
                         <Tag>ms: {historyLastDurationMs != null ? String(Math.max(0, Math.floor(Number(historyLastDurationMs)))) : '-'}</Tag>
                         <Tag>rows: {Array.isArray(historyView) ? historyView.length : 0}</Tag>
+                        <Tag color="magenta">H15: {history?.filter(x => x.strategy === 'crypto15m').length}</Tag>
+                        <Tag color="magenta">HAll: {history?.filter(x => x.strategy === 'cryptoall').length}</Tag>
+                        <Tag color="magenta">Total: {history?.length}</Tag>
                     </Space>
                     {historyLastError ? <Alert style={{ marginTop: 8 }} type="error" showIcon message={String(historyLastError)} /> : null}
                 </div>
@@ -2845,6 +2857,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                     className="compact-antd-table"
                     rowKey={(r) => {
                         const x: any = r as any;
+                        if (x._ui_id) return String(x._ui_id);
                         const id = x?.id ?? x?.orderId ?? x?.orderID ?? null;
                         if (id != null) return String(id);
                         const ts = x?.timestamp || x?.time || '';
