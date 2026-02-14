@@ -10,6 +10,7 @@
 
 常見檔案會包括：
     history.json
+    follow-paper-history.json
     auto-redeem.json
     relayer.json
     crypto15m-delta-thresholds.json
@@ -19,6 +20,8 @@
     crypto_all_2.json
     crypto_all_v2.json
     pnl-snapshots.json
+
+前端 UI（例如 Delta Box Auto-Apply 勾選）屬於 browser localStorage，唔會寫入雲端 runtime data；需要跨裝置同步就要靠 Save config/thresholds。
 
 ### 2) 服務配置（建議備份）
 
