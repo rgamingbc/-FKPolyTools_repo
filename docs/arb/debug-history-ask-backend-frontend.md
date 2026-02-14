@@ -4,7 +4,7 @@
 
 ## 一句講清楚（最常見成因）
 - **UI rows=0 唔等於 backend 冇資料**：好多時係 React Table `rowKey` 撞 key / null key，或者前端用咗「signature 去重」導致 state 唔更新。
-- **no-asks 唔等於 market 冇 ask**：通常係 backend 只 refresh 咗少量 candidates（例如 limit=5），UI 展示嘅其餘 rows 冇 orderbook snapshot，所以顯示 no-asks / 0.0c。
+- **no-asks / 0.0c 唔等於 market 冇 ask**：優先懷疑係 **books snapshot 冇填到**（tokenCount=0）、或者 `/books` 回傳 tokenId key 解析錯（`token_id` vs `asset_id`），令 orderbook 對唔上 tokenId。
 - **summary 有數但 history 空**：一定要分清係 backend 回傳就係咁，定係 frontend merge/filter/render 出事。
 
 ---
@@ -26,6 +26,14 @@ UI 嘅 candidates 來源一般係：
 - `/api/group-arb/cryptoall/candidates?...&limit=XX`
 - `/api/group-arb/crypto15m/candidates?...&limit=XX`
 
+#### 先睇 books snapshot（最易釘死 no-asks 根因）
+直接開呢個：
+- `/api/group-arb/cryptoall/status`
+
+你要睇嘅重點：
+- `status.books.tokenCount`：**應該 > 0**；如果係 0，UI 幾乎一定會出現大量 `no-asks / 0.0c`
+- `status.books.lastAttemptError`：如果有，代表 backend 抓 `/books` 失敗/被 throttled/blocked
+
 你要睇嘅重點：
 - `candidates.length`：同 UI rows 應該一致（除非 UI 有 sticky/merge）
 - 每個 candidate 內嘅 `upPrice/downPrice`（或 bestAsk）係咪 null / 0
@@ -33,6 +41,7 @@ UI 嘅 candidates 來源一般係：
 
 **重要 invariant（永遠唔好再破壞）**
 - 如果 UI 會展示 top 50 rows，backend 自動 refresh /books 就唔可以只做 top 5，否則 UI 其餘 rows 會長期 no-asks。
+- 如果你見到 `status.books.tokenCount=0`，先處理 books snapshot（唔好先改 UI）。
 
 ---
 
@@ -72,6 +81,15 @@ UI 嘅 candidates 來源一般係：
 正解：
 - backend 用至少 `limit >= UI 展示上限`（或者 UI 應該顯示同 limit 一致）
 
+### D. `/books` tokenId key 要做兼容解析
+曾經踩過坑：
+- CLOB `/books` 回傳常見係 `token_id`，唔一定有 `asset_id`
+- 如果 backend 只用 `asset_id`，會令 `byTokenId` 對唔上 → `tokenCount=0` → UI 全 `no-asks`
+
+排查方法（永遠第一步）：
+1) 打 `/api/group-arb/cryptoall/status` 睇 `status.books.tokenCount`
+2) 再打 `/api/group-arb/cryptoall/candidates` 睇 `upPrice/downPrice` 有冇值
+
 ### C. 先確認「backend 真係有 history」先改 UI
 流程：
 1) 先打 `/api/group-arb/.../history` 睇 `history.length`
@@ -86,4 +104,3 @@ UI 嘅 candidates 來源一般係：
 - 每個問題一條分支（例如 `fix/crypto15m-history-render`）
 - 改動前先寫清楚「驗證方式」同「預期數字」（例如 history 50 rows、no-asks=0）
 - 唔好混埋 UI/Backend 多個議題一次過改，否則好難回溯責任
-
