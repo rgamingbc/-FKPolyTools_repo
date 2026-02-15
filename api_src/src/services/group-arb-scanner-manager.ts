@@ -42,7 +42,10 @@ export class GroupArbScannerManager {
             id === 'default' && config.polymarket.privateKey && String(config.polymarket.privateKey).trim()
                 ? String(config.polymarket.privateKey).trim()
                 : undefined;
-        const effectiveKey = setup.privateKey || fallbackKey;
+        let effectiveKey = setup.privateKey || fallbackKey;
+        if (id === 'simulation' && !effectiveKey) {
+            effectiveKey = '0x0000000000000000000000000000000000000000000000000000000000000001';
+        }
         const scanner = new GroupArbitrageScanner({ privateKey: effectiveKey, proxyAddress: setup.proxyAddress, accountId: id });
         scanner.start();
         this.scanners.set(id, scanner);

@@ -84,6 +84,7 @@ export class GroupArbitrageScanner {
     private relayerSafe?: RelayClient;
     private relayerProxy?: RelayClient;
     private relayerConfigured = false;
+    public isSimulation = false;
     public latestResults: GroupArbOpportunity[] = [];
     public latestLogs: string[] = [];
     public orderHistory: any[] = []; // In-memory order history
@@ -260,6 +261,11 @@ export class GroupArbitrageScanner {
     private crypto15mHedgeConfigLoadedAt: string | null = null;
     private crypto15mHedgeConfigPersistedAt: string | null = null;
     private crypto15mHedgeConfigPersistLastError: string | null = null;
+    private crypto15mHedgeSimPath: string | null = null;
+    private crypto15mHedgeSimLoadedAt: string | null = null;
+    private crypto15mHedgeSimPersistedAt: string | null = null;
+    private crypto15mHedgeSimPersistLastError: string | null = null;
+    private crypto15mHedgeSimState: { enabled: boolean; initialUsdc: number; cashUsdc: number; positionsByTokenId: Record<string, number> } | null = null;
     private crypto15mHedgeActivesBySymbol: Map<string, any> = new Map();
     private crypto15mHedgeTrackedByCondition: Map<string, any> = new Map();
     private crypto15mHedgeOrderLocks: Map<string, { atMs: number; symbol: string; expiresAtMs: number; conditionId: string; status: 'placing' | 'ordered' | 'failed' }> = new Map();
@@ -269,6 +275,8 @@ export class GroupArbitrageScanner {
         expiresWithinSec: number;
         minProb: number;
         amountUsd: number;
+        simEnabled?: boolean;
+        simInitialUsdc?: number;
         entryRemainingMinSec: number;
         entryRemainingMaxSec: number;
         entryCheapMinCents: number;
@@ -296,6 +304,8 @@ export class GroupArbitrageScanner {
         expiresWithinSec: 900,
         minProb: 0,
         amountUsd: 200,
+        simEnabled: false,
+        simInitialUsdc: 1000,
         entryRemainingMinSec: 480,
         entryRemainingMaxSec: 900,
         entryCheapMinCents: 8,
@@ -681,21 +691,30 @@ export class GroupArbitrageScanner {
     private rpcPrivateKey: string = '';
     private accountId: string = 'default';
 
-    constructor(arg?: string | { privateKey?: string; proxyAddress?: string; accountId?: string }) {
-        const opts: { privateKey?: string; proxyAddress?: string; accountId?: string } =
+    // Constructor Injection for TradingClient (Critical for Simulation)
+    constructor(arg?: string | { privateKey?: string; proxyAddress?: string; accountId?: string; tradingClient?: any }) {
+        const opts: { privateKey?: string; proxyAddress?: string; accountId?: string; tradingClient?: any } =
             (arg != null && typeof arg === 'object') ? (arg as any) : ({ privateKey: arg as any } as any);
         const privateKey = opts.privateKey;
         this.accountId = opts.accountId != null ? String(opts.accountId).trim() || 'default' : 'default';
         const legacyMode = !(arg != null && typeof arg === 'object');
         const stateDirEnv = process.env.POLY_STATE_DIR != null ? String(process.env.POLY_STATE_DIR).trim() : '';
-        const stateDirBaseRaw = stateDirEnv || path.join(os.tmpdir(), 'polymarket-tools');
+        const stableStateDirBaseRaw = path.resolve(process.cwd(), '..', '.polymarket-tools');
+        const legacyStateDirBaseRaw = path.join(os.tmpdir(), 'polymarket-tools');
+        const stateDirBaseRaw = stateDirEnv || stableStateDirBaseRaw;
         const stateDirBase = path.isAbsolute(stateDirBaseRaw) ? stateDirBaseRaw : path.resolve(process.cwd(), stateDirBaseRaw);
-        const baseDir = legacyMode ? stateDirBase : path.join(stateDirBase, 'accounts', this.accountId);
+        const legacyStateDirBase = path.isAbsolute(legacyStateDirBaseRaw) ? legacyStateDirBaseRaw : path.resolve(process.cwd(), legacyStateDirBaseRaw);
+        
+        // Simulation Account Isolation: Use separate directory
+        const baseDir = (this.accountId === 'simulation' || !legacyMode) 
+            ? path.join(stateDirBase, 'accounts', this.accountId) 
+            : stateDirBase;
+
         try { fs.mkdirSync(baseDir, { recursive: true }); } catch {}
         const maybeMigrateLegacyFile = (filename: string, destPath: string) => {
             if (legacyMode) return;
             if (this.accountId !== 'default') return;
-            const srcPath = path.join(stateDirBase, filename);
+            const srcPath = path.join(legacyStateDirBase, filename);
             try {
                 if (fs.existsSync(destPath)) return;
                 if (!fs.existsSync(srcPath)) return;
@@ -717,47 +736,71 @@ export class GroupArbitrageScanner {
             }
             return path.join(baseDir, filename);
         };
-        this.sdk = new PolymarketSDK({
-            privateKey,
-        } as any);
+        const privateKeyStr = privateKey != null ? String(privateKey).trim() : '';
+        const hasRealKey = privateKeyStr.length > 50;
 
-        this.hasValidKey = !!privateKey && privateKey.length > 50; // Simple check
-        const effectiveKey = this.hasValidKey ? privateKey! : '0x0000000000000000000000000000000000000000000000000000000000000001';
+        this.isSimulation = this.accountId === 'simulation';
+        this.hasValidKey = hasRealKey;
+        const effectiveKey = hasRealKey ? privateKeyStr : '0x0000000000000000000000000000000000000000000000000000000000000001';
         this.rpcPrivateKey = effectiveKey;
 
-        // Initialize Trading Client manually since SDK doesn't expose it publically
-        const rateLimiter = new RateLimiter(); 
-        
-        const proxyAddress = opts.proxyAddress != null ? String(opts.proxyAddress).trim() : process.env.POLY_PROXY_ADDRESS;
-
-        this.tradingClient = new TradingClient(rateLimiter, {
+        this.sdk = new PolymarketSDK({
             privateKey: effectiveKey,
-            chainId: 137,
-            proxyAddress: proxyAddress
-        });
+        } as any);
 
-        if (this.hasValidKey) {
-            this.relayerConfigPath = resolvePath(process.env.POLY_RELAYER_CONFIG_PATH, 'relayer.json');
-            this.autoRedeemConfigPath = resolvePath(process.env.POLY_AUTO_REDEEM_CONFIG_PATH, 'auto-redeem.json');
-            this.orderHistoryPath = resolvePath(process.env.POLY_ORDER_HISTORY_PATH, 'history.json');
-            this.crypto15mDeltaThresholdsPath = resolvePath(process.env.POLY_CRYPTO15M_DELTA_THRESHOLDS_PATH, 'crypto15m-delta-thresholds.json');
-            this.crypto15mAutoConfigPath = resolvePath(process.env.POLY_CRYPTO15M_CONFIG_PATH, 'crypto15m-config.json');
-            this.crypto15mHedgeConfigPath = resolvePath(process.env.POLY_CRYPTO15M_HEDGE_CONFIG_PATH, 'crypto15m-hedge.json');
-            this.cryptoAll2DeltaThresholdsPath = resolvePath(process.env.POLY_CRYPTOALL2_DELTA_THRESHOLDS_PATH, 'cryptoall2-delta-thresholds.json');
-            this.cryptoAll2AutoConfigPath = resolvePath(process.env.POLY_CRYPTOALL2_CONFIG_PATH, 'crypto_all_2.json');
-            this.cryptoAllAutoConfigPath = resolvePath(process.env.POLY_CRYPTOALL_CONFIG_PATH, 'crypto_all_v2.json');
-            this.cryptoAllDeltaThresholdsPath = resolvePath(process.env.POLY_CRYPTOALL_DELTA_THRESHOLDS_PATH, 'cryptoall-delta-thresholds.json');
+        if (opts.tradingClient) {
+            console.log(`[GroupArbitrageScanner] Initialized with INJECTED TradingClient for account: ${this.accountId}`);
+            this.tradingClient = opts.tradingClient;
+        } else {
+            // Initialize Trading Client manually since SDK doesn't expose it publically
+            const rateLimiter = new RateLimiter(); 
+            
+            const proxyAddress = opts.proxyAddress != null ? String(opts.proxyAddress).trim() : process.env.POLY_PROXY_ADDRESS;
 
-            maybeMigrateLegacyFile('relayer.json', this.relayerConfigPath);
-            maybeMigrateLegacyFile('auto-redeem.json', this.autoRedeemConfigPath);
-            maybeMigrateLegacyFile('history.json', this.orderHistoryPath);
-            maybeMigrateLegacyFile('crypto15m-delta-thresholds.json', this.crypto15mDeltaThresholdsPath);
-            maybeMigrateLegacyFile('crypto15m-config.json', this.crypto15mAutoConfigPath);
-            maybeMigrateLegacyFile('crypto15m-hedge.json', this.crypto15mHedgeConfigPath);
-            maybeMigrateLegacyFile('cryptoall2-delta-thresholds.json', this.cryptoAll2DeltaThresholdsPath);
-            maybeMigrateLegacyFile('crypto_all_2.json', this.cryptoAll2AutoConfigPath);
-            maybeMigrateLegacyFile('crypto_all_v2.json', this.cryptoAllAutoConfigPath);
-            maybeMigrateLegacyFile('cryptoall-delta-thresholds.json', this.cryptoAllDeltaThresholdsPath);
+            this.tradingClient = new TradingClient(rateLimiter, {
+                privateKey: effectiveKey,
+                chainId: 137,
+                proxyAddress: proxyAddress
+            });
+        }
+
+        this.relayerConfigPath = resolvePath(process.env.POLY_RELAYER_CONFIG_PATH, 'relayer.json');
+        this.autoRedeemConfigPath = resolvePath(process.env.POLY_AUTO_REDEEM_CONFIG_PATH, 'auto-redeem.json');
+        this.orderHistoryPath = resolvePath(process.env.POLY_ORDER_HISTORY_PATH, 'history.json');
+        this.crypto15mDeltaThresholdsPath = resolvePath(process.env.POLY_CRYPTO15M_DELTA_THRESHOLDS_PATH, 'crypto15m-delta-thresholds.json');
+        this.crypto15mAutoConfigPath = resolvePath(process.env.POLY_CRYPTO15M_CONFIG_PATH, 'crypto15m-config.json');
+        this.crypto15mHedgeConfigPath = resolvePath(process.env.POLY_CRYPTO15M_HEDGE_CONFIG_PATH, 'crypto15m-hedge.json');
+        this.crypto15mHedgeSimPath = resolvePath(process.env.POLY_CRYPTO15M_HEDGE_SIM_PATH, 'crypto15m-hedge-sim.json');
+        this.cryptoAll2DeltaThresholdsPath = resolvePath(process.env.POLY_CRYPTOALL2_DELTA_THRESHOLDS_PATH, 'cryptoall2-delta-thresholds.json');
+        this.cryptoAll2AutoConfigPath = resolvePath(process.env.POLY_CRYPTOALL2_CONFIG_PATH, 'crypto_all_2.json');
+        this.cryptoAllAutoConfigPath = resolvePath(process.env.POLY_CRYPTOALL_CONFIG_PATH, 'crypto_all_v2.json');
+        this.cryptoAllDeltaThresholdsPath = resolvePath(process.env.POLY_CRYPTOALL_DELTA_THRESHOLDS_PATH, 'cryptoall-delta-thresholds.json');
+
+        maybeMigrateLegacyFile('relayer.json', this.relayerConfigPath);
+        maybeMigrateLegacyFile('auto-redeem.json', this.autoRedeemConfigPath);
+        maybeMigrateLegacyFile('history.json', this.orderHistoryPath);
+        maybeMigrateLegacyFile('crypto15m-delta-thresholds.json', this.crypto15mDeltaThresholdsPath);
+        maybeMigrateLegacyFile('crypto15m-config.json', this.crypto15mAutoConfigPath);
+        maybeMigrateLegacyFile('crypto15m-hedge.json', this.crypto15mHedgeConfigPath);
+        maybeMigrateLegacyFile('crypto15m-hedge-sim.json', this.crypto15mHedgeSimPath);
+        maybeMigrateLegacyFile('cryptoall2-delta-thresholds.json', this.cryptoAll2DeltaThresholdsPath);
+        maybeMigrateLegacyFile('crypto_all_2.json', this.cryptoAll2AutoConfigPath);
+        maybeMigrateLegacyFile('crypto_all_v2.json', this.cryptoAllAutoConfigPath);
+        maybeMigrateLegacyFile('cryptoall-delta-thresholds.json', this.cryptoAllDeltaThresholdsPath);
+
+        this.loadRelayerConfigFromFile();
+        this.loadAutoRedeemConfigFromFile();
+        this.loadOrderHistoryFromFile();
+        this.loadCrypto15mDeltaThresholdsFromFile();
+        this.loadCryptoAll2DeltaThresholdsFromFile();
+        this.loadCryptoAllDeltaThresholdsFromFile();
+        this.loadCrypto15mAutoConfigFromFile();
+        this.loadCrypto15mHedgeConfigFromFile();
+        this.loadCrypto15mHedgeSimFromFile();
+        this.loadCryptoAll2AutoConfigFromFile();
+        this.loadCryptoAllAutoConfigFromFile();
+
+        if (hasRealKey) {
             const envList = process.env.POLY_RPC_URLS || process.env.POLY_CTF_RPC_URLS || process.env.POLY_RPC_FALLBACK_URLS;
             const urls = (envList ? String(envList).split(',') : [
                 process.env.POLY_CTF_RPC_URL,
@@ -781,31 +824,21 @@ export class GroupArbitrageScanner {
                 chain: polygon,
                 transport: http(rpcUrl),
             });
-            this.loadRelayerConfigFromFile();
             this.configureRelayerFromEnv();
-            this.loadAutoRedeemConfigFromFile();
-            this.loadOrderHistoryFromFile();
-            this.loadCrypto15mDeltaThresholdsFromFile();
-            this.loadCryptoAll2DeltaThresholdsFromFile();
-            this.loadCryptoAllDeltaThresholdsFromFile();
-            this.loadCrypto15mAutoConfigFromFile();
-            this.loadCrypto15mHedgeConfigFromFile();
-            this.loadCryptoAll2AutoConfigFromFile();
-            this.loadCryptoAllAutoConfigFromFile();
         }
 
         this.pnlPersistencePath = process.env.POLY_PNL_SNAPSHOT_PATH
             ? resolvePath(process.env.POLY_PNL_SNAPSHOT_PATH, 'pnl-snapshots.json')
             : path.join(baseDir, 'pnl-snapshots.json');
         maybeMigrateLegacyFile('pnl-snapshots.json', this.pnlPersistencePath);
-        
-        this.startTradingInitRetry();
-        
-        // Start monitoring loop for cut-loss/trailing stop
-        this.startMonitoring();
 
-        if (this.hasValidKey) {
-            this.loadPnlSnapshots().finally(() => this.startPnlSnapshots());
+        const disableBackground = process.env.POLY_DISABLE_BACKGROUND === '1' || process.env.POLY_DISABLE_TRADING_INIT === '1';
+        if (!disableBackground) {
+            if (hasRealKey) this.startTradingInitRetry();
+            this.startMonitoring();
+            if (hasRealKey) {
+                this.loadPnlSnapshots().finally(() => this.startPnlSnapshots());
+            }
         }
     }
 
@@ -1999,6 +2032,14 @@ export class GroupArbitrageScanner {
                 backoffMs: this.crypto15mBooksBackoffMs || 0,
                 nextAllowedAtMs: this.crypto15mBooksNextAllowedAtMs || 0,
                 nextAllowedAt: this.crypto15mBooksNextAllowedAtMs ? new Date(this.crypto15mBooksNextAllowedAtMs).toISOString() : null,
+                recommendedMinIntervalMs: (() => {
+                    const s: any = (this as any).clobBooksGlobalState || null;
+                    const now = Date.now();
+                    const globalThrottle = s && s.throttleBackoffMs != null ? Number(s.throttleBackoffMs) : 0;
+                    const globalBlocked = s && s.blockedUntilMs != null && Number(s.blockedUntilMs) > now;
+                    const hasBookErr = !!(this.crypto15mBooksSnapshot.lastError || this.crypto15mBooksSnapshot.lastAttemptError);
+                    return globalBlocked || globalThrottle > 0 || hasBookErr ? 4000 : 3000;
+                })(),
             },
             booksGlobal: (() => {
                 const s: any = (this as any).clobBooksGlobalState || null;
@@ -2006,6 +2047,7 @@ export class GroupArbitrageScanner {
                     nextAllowedAtMs: Number(s.nextAllowedAtMs || 0),
                     blockedUntilMs: Number(s.blockedUntilMs || 0),
                     blockedBackoffMs: Number(s.blockedBackoffMs || 0),
+                    throttleBackoffMs: Number(s.throttleBackoffMs || 0),
                     lastStatus: s.lastStatus ?? null,
                     lastError: s.lastError ?? null,
                 } : null;
@@ -2682,6 +2724,20 @@ export class GroupArbitrageScanner {
                 };
             });
 
+        const configEvents = this.orderHistory
+            .filter((e: any) => {
+                const a = String(e?.action || '');
+                return a === 'cryptoall_config_start' || a === 'cryptoall_config_stop' || a === 'cryptoall_config_update';
+            })
+            .slice(0, Math.max(20, maxEntries))
+            .map((e: any) => ({
+                id: e?.id,
+                timestamp: e?.timestamp,
+                action: e?.action,
+                enabled: e?.config?.enabled ?? null,
+                config: e?.config ?? null,
+            }));
+
         const summary = {
             count: items.length,
             totalStakeUsd: items.reduce((s: number, x: any) => s + (Number(x?.amountUsd) || 0), 0),
@@ -2693,7 +2749,7 @@ export class GroupArbitrageScanner {
             redeemedCount: items.filter((x: any) => x.redeemStatus === 'confirmed' && x.paid === true).length,
         };
 
-        return { success: true, summary, history: items, historyPersist: { path: this.orderHistoryPath, lastError: this.orderHistoryPersistLastError } };
+        return { success: true, summary, history: items, configEvents, historyPersist: { path: this.orderHistoryPath, lastError: this.orderHistoryPersistLastError } };
     }
 
     async getCryptoAllReplay(idRaw: any) {
@@ -2923,6 +2979,8 @@ export class GroupArbitrageScanner {
                 expiresWithinSec: parsed?.expiresWithinSec != null ? Number(parsed.expiresWithinSec) : this.crypto15mHedgeAutoConfig.expiresWithinSec,
                 minProb: parsed?.minProb != null ? Number(parsed.minProb) : this.crypto15mHedgeAutoConfig.minProb,
                 amountUsd: parsed?.amountUsd != null ? Number(parsed.amountUsd) : this.crypto15mHedgeAutoConfig.amountUsd,
+                simEnabled: parsed?.simEnabled != null ? !!parsed.simEnabled : (this.crypto15mHedgeAutoConfig as any).simEnabled,
+                simInitialUsdc: parsed?.simInitialUsdc != null ? Number(parsed.simInitialUsdc) : (this.crypto15mHedgeAutoConfig as any).simInitialUsdc,
                 entryRemainingMinSec: parsed?.entryRemainingMinSec != null ? Number(parsed.entryRemainingMinSec) : this.crypto15mHedgeAutoConfig.entryRemainingMinSec,
                 entryRemainingMaxSec: parsed?.entryRemainingMaxSec != null ? Number(parsed.entryRemainingMaxSec) : this.crypto15mHedgeAutoConfig.entryRemainingMaxSec,
                 entryCheapMinCents: parsed?.entryCheapMinCents != null ? Number(parsed.entryCheapMinCents) : this.crypto15mHedgeAutoConfig.entryCheapMinCents,
@@ -2958,11 +3016,15 @@ export class GroupArbitrageScanner {
             const panicHedgeEnabled = next.panicHedgeEnabled === true;
             const panicHedgeStartSec = Math.max(0, Math.min(900, Math.floor(Number.isFinite(next.panicHedgeStartSec) ? next.panicHedgeStartSec : 120)));
             const panicMaxLossCents = Math.max(0, Math.min(200, Number.isFinite(next.panicMaxLossCents) ? next.panicMaxLossCents : 20));
+            const simInitialUsdc = Math.max(1, Math.min(1_000_000, Number.isFinite(next.simInitialUsdc) ? Number(next.simInitialUsdc) : 1000));
+            const simEnabled = this.isSimulation ? true : (next.simEnabled === true);
             this.crypto15mHedgeAutoConfig = {
                 pollMs: Math.max(500, Math.floor(Number.isFinite(next.pollMs) ? next.pollMs : 2_000)),
                 expiresWithinSec: 900,
                 minProb: Math.max(0, Math.min(1, Number.isFinite(next.minProb) ? next.minProb : 0)),
                 amountUsd: Math.max(1, Number.isFinite(next.amountUsd) ? next.amountUsd : 1),
+                simEnabled,
+                simInitialUsdc,
                 entryRemainingMinSec,
                 entryRemainingMaxSec,
                 entryCheapMinCents: Math.max(1, Math.min(49, Number.isFinite(next.entryCheapMinCents) ? next.entryCheapMinCents : 8)),
@@ -3018,6 +3080,118 @@ export class GroupArbitrageScanner {
         } catch (e: any) {
             this.crypto15mHedgeConfigPersistLastError = e?.message ? String(e.message) : 'Failed to write crypto15m-hedge config file';
         }
+    }
+
+    private loadCrypto15mHedgeSimFromFile() {
+        if (!this.crypto15mHedgeSimPath) return;
+        try {
+            if (!fs.existsSync(this.crypto15mHedgeSimPath)) return;
+            const raw = fs.readFileSync(this.crypto15mHedgeSimPath, 'utf8');
+            const parsed = JSON.parse(String(raw || '{}'));
+            const initialUsdc = Math.max(1, Math.min(1_000_000, Number(parsed?.initialUsdc ?? 1000)));
+            const cashUsdc = Math.max(0, Number(parsed?.cashUsdc ?? initialUsdc));
+            const positionsByTokenIdRaw = parsed?.positionsByTokenId && typeof parsed.positionsByTokenId === 'object' ? parsed.positionsByTokenId : {};
+            const positionsByTokenId: Record<string, number> = {};
+            for (const [k, v] of Object.entries(positionsByTokenIdRaw)) {
+                const tokenId = String(k || '').trim();
+                const shares = Number(v);
+                if (!tokenId) continue;
+                if (!Number.isFinite(shares) || shares <= 0) continue;
+                positionsByTokenId[tokenId] = shares;
+            }
+            this.crypto15mHedgeSimState = {
+                enabled: parsed?.enabled === true,
+                initialUsdc,
+                cashUsdc,
+                positionsByTokenId,
+            };
+            this.crypto15mHedgeSimLoadedAt = new Date().toISOString();
+            this.crypto15mHedgeSimPersistLastError = null;
+        } catch {
+        }
+    }
+
+    private persistCrypto15mHedgeSimToFile() {
+        if (!this.crypto15mHedgeSimPath) return;
+        if (!this.crypto15mHedgeSimState) return;
+        const writeAtomic = (targetPath: string, payload: string) => {
+            const dir = path.dirname(targetPath);
+            fs.mkdirSync(dir, { recursive: true });
+            const bakPath = `${targetPath}.bak`;
+            const tmpPath = `${targetPath}.tmp`;
+            try {
+                if (fs.existsSync(targetPath)) {
+                    fs.copyFileSync(targetPath, bakPath);
+                    try { fs.chmodSync(bakPath, 0o600); } catch {}
+                }
+            } catch {
+            }
+            fs.writeFileSync(tmpPath, payload, { encoding: 'utf8', mode: 0o600 });
+            try { fs.chmodSync(tmpPath, 0o600); } catch {}
+            fs.renameSync(tmpPath, targetPath);
+            try { fs.chmodSync(targetPath, 0o600); } catch {}
+        };
+        try {
+            writeAtomic(this.crypto15mHedgeSimPath, JSON.stringify({ ...this.crypto15mHedgeSimState }));
+            this.crypto15mHedgeSimPersistedAt = new Date().toISOString();
+            this.crypto15mHedgeSimPersistLastError = null;
+        } catch (e: any) {
+            this.crypto15mHedgeSimPersistLastError = e?.message ? String(e.message) : 'Failed to write crypto15m-hedge sim file';
+        }
+    }
+
+    private crypto15mHedgeIsSimEnabled() {
+        return this.isSimulation || (this.crypto15mHedgeAutoConfig as any).simEnabled === true;
+    }
+
+    private ensureCrypto15mHedgeSimState() {
+        const enabled = this.crypto15mHedgeIsSimEnabled();
+        if (!enabled) return null;
+        const initialUsdcCfg = Number((this.crypto15mHedgeAutoConfig as any).simInitialUsdc ?? 1000);
+        const initialUsdc = Math.max(1, Math.min(1_000_000, Number.isFinite(initialUsdcCfg) ? initialUsdcCfg : 1000));
+        const st = this.crypto15mHedgeSimState;
+        if (!st || st.initialUsdc !== initialUsdc) {
+            this.crypto15mHedgeSimState = { enabled: true, initialUsdc, cashUsdc: initialUsdc, positionsByTokenId: {} };
+            this.persistCrypto15mHedgeSimToFile();
+            return this.crypto15mHedgeSimState;
+        }
+        if (st.enabled !== true) {
+            this.crypto15mHedgeSimState = { ...st, enabled: true };
+            this.persistCrypto15mHedgeSimToFile();
+            return this.crypto15mHedgeSimState;
+        }
+        return st;
+    }
+
+    private computeCrypto15mHedgeSimSummary() {
+        const st = this.crypto15mHedgeSimState;
+        if (!st || st.enabled !== true) return null;
+        const positions = st.positionsByTokenId || {};
+        const byTokenId = this.crypto15mBooksSnapshot.byTokenId || {};
+        let positionsValueUsdc = 0;
+        let openPositions = 0;
+        for (const [tokenId, sharesRaw] of Object.entries(positions)) {
+            const shares = Number(sharesRaw);
+            if (!Number.isFinite(shares) || shares <= 0) continue;
+            openPositions += 1;
+            const b = byTokenId[tokenId] || null;
+            const bestBid = b?.bestBid != null ? Number(b.bestBid) : NaN;
+            const bestAsk = b?.bestAsk != null ? Number(b.bestAsk) : NaN;
+            const px = Number.isFinite(bestBid) && bestBid > 0 ? bestBid : (Number.isFinite(bestAsk) && bestAsk > 0 ? bestAsk : 0);
+            positionsValueUsdc += shares * px;
+        }
+        const cashUsdc = Number.isFinite(Number(st.cashUsdc)) ? Number(st.cashUsdc) : 0;
+        const equityUsdc = cashUsdc + positionsValueUsdc;
+        const pnlUsdc = equityUsdc - Number(st.initialUsdc);
+        return {
+            enabled: true,
+            initialUsdc: st.initialUsdc,
+            cashUsdc,
+            positionsValueUsdc,
+            equityUsdc,
+            pnlUsdc,
+            openPositions,
+        };
     }
 
     private loadCryptoAll2AutoConfigFromFile() {
@@ -5267,6 +5441,7 @@ export class GroupArbitrageScanner {
         const controller = new AbortController();
         const t = setTimeout(() => controller.abort(), 6_000);
         try {
+            // console.log(`[Debug] Binance Fetch ${binSymbol} start=${startMs}`);
             const spotRes = await this.withTimeout(
                 fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${binSymbol}`, { signal: controller.signal }).finally(() => clearTimeout(t)),
                 6_500,
@@ -5277,13 +5452,16 @@ export class GroupArbitrageScanner {
             const currentPrice = spotJson?.price != null ? Number(spotJson.price) : null;
             if (currentPrice == null || !Number.isFinite(currentPrice)) throw new Error('Binance spot missing price');
 
+            const kUrl = `https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1m&startTime=${startMs}&limit=1`;
+            // console.log(`[Debug] Binance Kline URL: ${kUrl}`);
             const kRes = await this.withTimeout(
-                fetch(`https://api.binance.com/api/v3/klines?symbol=${binSymbol}&interval=1m&startTime=${startMs}&limit=1`, { signal: controller.signal }),
+                fetch(kUrl, { signal: controller.signal }),
                 6_500,
                 `Binance kline ${binSymbol}`
             );
             if (!kRes.ok) throw new Error(`Binance kline HTTP ${kRes.status}`);
             const kJson: any = await this.withTimeout(kRes.json(), 3_000, `Binance kline json ${binSymbol}`);
+            // console.log(`[Debug] Binance Kline Res:`, kJson?.[0]);
             const open = Array.isArray(kJson) && kJson[0] && kJson[0][1] != null ? Number(kJson[0][1]) : null;
             const priceToBeat = open != null && Number.isFinite(open) ? open : null;
             const deltaAbs = priceToBeat != null ? Math.abs(currentPrice - priceToBeat) : null;
@@ -5330,8 +5508,8 @@ export class GroupArbitrageScanner {
         const cache = (this as any).clobBooksCache as Map<string, { atMs: number; data: any[] }> | undefined;
         const cached = cache?.get(sortedKey);
         if (cached && Date.now() - cached.atMs < 1200) return cached.data;
-        const globalMinIntervalMs = 2000;
-        const globalState = ((this as any).clobBooksGlobalState ??= { nextAllowedAtMs: 0, blockedUntilMs: 0, blockedBackoffMs: 0, lastStatus: null as any, lastError: null as any });
+        const globalMinIntervalMs = 3000;
+        const globalState = ((this as any).clobBooksGlobalState ??= { nextAllowedAtMs: 0, blockedUntilMs: 0, blockedBackoffMs: 0, throttleBackoffMs: 0, lastStatus: null as any, lastError: null as any });
         const nowMs = Date.now();
         if (globalState.blockedUntilMs && nowMs < globalState.blockedUntilMs) {
             if (cached) return cached.data;
@@ -5376,7 +5554,15 @@ export class GroupArbitrageScanner {
                             globalState.blockedBackoffMs = next;
                             globalState.blockedUntilMs = Date.now() + next;
                             globalState.lastError = `blocked_403 backoffMs=${next}`;
+                        } else if (res.status === 429) {
+                            const next = globalState.throttleBackoffMs ? Math.min(30_000, Math.floor(globalState.throttleBackoffMs * 2)) : 4000;
+                            globalState.throttleBackoffMs = next;
+                            globalState.nextAllowedAtMs = Date.now() + next;
+                            globalState.lastError = `throttled_429 backoffMs=${next}`;
                         } else {
+                            const next = globalState.throttleBackoffMs ? Math.min(30_000, Math.floor(globalState.throttleBackoffMs * 2)) : 4000;
+                            globalState.throttleBackoffMs = next;
+                            globalState.nextAllowedAtMs = Date.now() + next;
                             globalState.lastError = `http_${res.status}`;
                         }
                         throw new Error(`CLOB /books failed (${res.status}): ${msg}`);
@@ -5432,6 +5618,7 @@ export class GroupArbitrageScanner {
             globalState.lastError = null;
             globalState.blockedUntilMs = 0;
             globalState.blockedBackoffMs = 0;
+            globalState.throttleBackoffMs = 0;
             return out;
         } finally {
         }
@@ -5913,7 +6100,7 @@ export class GroupArbitrageScanner {
                 this.crypto15mBooksNextAllowedAtMs = 0;
             } catch (e: any) {
                 const msg = e?.message || String(e);
-                const next = this.crypto15mBooksBackoffMs ? Math.min(30_000, this.crypto15mBooksBackoffMs * 2) : 1000;
+                const next = this.crypto15mBooksBackoffMs ? Math.min(30_000, this.crypto15mBooksBackoffMs * 2) : 4000;
                 this.crypto15mBooksBackoffMs = next;
                 this.crypto15mBooksNextAllowedAtMs = Date.now() + next;
                 this.crypto15mBooksSnapshot = { ...this.crypto15mBooksSnapshot, lastError: msg, lastAttemptError: msg };
@@ -5926,9 +6113,10 @@ export class GroupArbitrageScanner {
 
     private async refreshCrypto15mBooksSnapshotTiered(options?: { targetFreshMs?: number }): Promise<void> {
         const desired = Number(options?.targetFreshMs);
-        const staleMsThreshold = Number.isFinite(Number(this.crypto15mAutoConfig.staleMsThreshold)) ? Number(this.crypto15mAutoConfig.staleMsThreshold) : 1500;
-        const targetFreshMs = Math.max(100, Math.floor(Number.isFinite(desired) ? desired : 500));
-        const target = Math.min(targetFreshMs, Math.max(200, Math.floor(staleMsThreshold)));
+        // Increase default thresholds to reduce "no-asks" and load
+        const staleMsThreshold = Number.isFinite(Number(this.crypto15mAutoConfig.staleMsThreshold)) ? Number(this.crypto15mAutoConfig.staleMsThreshold) : 3000;
+        const targetFreshMs = Math.max(500, Math.floor(Number.isFinite(desired) ? desired : 1500));
+        const target = Math.min(targetFreshMs, Math.max(1000, Math.floor(staleMsThreshold)));
         const markets = Array.isArray(this.crypto15mMarketSnapshot.markets) ? this.crypto15mMarketSnapshot.markets : [];
         const tokenIds = Array.from(new Set(markets.flatMap((m: any) => Array.isArray(m?.tokenIds) ? m.tokenIds : []).map((t: any) => String(t || '').trim()).filter((t) => !!t)));
         if (!tokenIds.length) return;
@@ -5949,7 +6137,7 @@ export class GroupArbitrageScanner {
         if (!needs.length) return;
 
         this.crypto15mBooksSnapshot = { ...this.crypto15mBooksSnapshot, lastAttemptAtMs: Date.now(), lastAttemptError: null };
-        const chunkSize = 80;
+        const chunkSize = 50; // Reduced chunk size slightly
         const booksCache = (this as any).clobBooksCache as Map<string, { atMs: number; data: any[] }> | undefined;
         let anyOk = false;
         let firstErrMsg: string | null = null;
@@ -6014,6 +6202,11 @@ export class GroupArbitrageScanner {
             } catch (e: any) {
                 const msg = e?.message || String(e);
                 if (!firstErrMsg) firstErrMsg = msg;
+                // Anti-storm: Update fetchedAtMs even on error to prevent immediate retry loop
+                const backoffAt = Date.now() - Math.floor(target / 2); // Pretend it was fetched half-life ago
+                for (const tid of chunk) {
+                   if (byTokenId[tid]) byTokenId[tid] = { ...byTokenId[tid], fetchedAtMs: backoffAt, error: 'fetch_failed' };
+                }
             }
         }
         if (!anyOk && firstErrMsg) {
@@ -6027,7 +6220,13 @@ export class GroupArbitrageScanner {
         const minProb = Math.max(0, Math.min(1, Number(options?.minProb ?? this.crypto15mAutoConfig.minProb)));
         const expiresWithinSec = Math.max(5, Math.floor(Number(options?.expiresWithinSec ?? this.crypto15mAutoConfig.expiresWithinSec)));
         const limit = Math.max(1, Math.floor(Number(options?.limit ?? 20)));
-        const staleMsThreshold = Number.isFinite(Number(this.crypto15mAutoConfig.staleMsThreshold)) ? Number(this.crypto15mAutoConfig.staleMsThreshold) : 1500;
+        const globalState = (this as any).clobBooksGlobalState || null;
+        const globalThrottle = globalState && globalState.throttleBackoffMs != null ? Number(globalState.throttleBackoffMs) : 0;
+        const globalBlocked = globalState && globalState.blockedUntilMs != null && Number(globalState.blockedUntilMs) > Date.now();
+        const hasBookErr = !!(this.crypto15mBooksSnapshot.lastError || this.crypto15mBooksSnapshot.lastAttemptError);
+        const recommendedMinIntervalMs = globalBlocked || globalThrottle > 0 || hasBookErr ? 4000 : 3000;
+        const staleMsThresholdBase = Number.isFinite(Number(this.crypto15mAutoConfig.staleMsThreshold)) ? Number(this.crypto15mAutoConfig.staleMsThreshold) : 1500;
+        const staleMsThreshold = Math.max(staleMsThresholdBase, recommendedMinIntervalMs + 500);
         const now = Date.now();
         const markets = Array.isArray(this.crypto15mMarketSnapshot.markets) ? this.crypto15mMarketSnapshot.markets : [];
         const byTokenId = this.crypto15mBooksSnapshot.byTokenId || {};
@@ -6589,7 +6788,12 @@ export class GroupArbitrageScanner {
         const needMarket = marketAt <= 0;
         const needBooks = booksAt <= 0;
         const marketStale = !needMarket && (now - marketAt) > 5_000;
-        const booksStale = !needBooks && (now - booksAt) > 500;
+        const globalState = (this as any).clobBooksGlobalState || null;
+        const globalThrottle = globalState && globalState.throttleBackoffMs != null ? Number(globalState.throttleBackoffMs) : 0;
+        const globalBlocked = globalState && globalState.blockedUntilMs != null && Number(globalState.blockedUntilMs) > now;
+        const hasBookErr = !!(this.crypto15mBooksSnapshot.lastError || this.crypto15mBooksSnapshot.lastAttemptError);
+        const recommendedMinIntervalMs = globalBlocked || globalThrottle > 0 || hasBookErr ? 4000 : 3000;
+        const booksStale = !needBooks && (now - booksAt) > recommendedMinIntervalMs;
 
         if (needMarket) await this.refreshCrypto15mMarketSnapshot();
         else if (marketStale) this.refreshCrypto15mMarketSnapshot().catch(() => {});
@@ -6606,11 +6810,12 @@ export class GroupArbitrageScanner {
                 const b = byTokenId[k];
                 return b && Number(b.asksCount || 0) > 0 && b.bestAsk != null;
             });
-            if (!hasAnyBook && !this.crypto15mBooksSnapshot.lastError) {
-                this.crypto15mBooksInFlight = null;
-                this.crypto15mBooksBackoffMs = 0;
-                this.crypto15mBooksNextAllowedAtMs = 0;
-                this.refreshCrypto15mBooksSnapshot().catch(() => {});
+            if (!hasAnyBook) {
+                const next = Math.max(4000, Number.isFinite(this.crypto15mBooksBackoffMs) ? Number(this.crypto15mBooksBackoffMs) : 0);
+                this.crypto15mBooksBackoffMs = next;
+                this.crypto15mBooksNextAllowedAtMs = Date.now() + next;
+                const err = 'books_empty_or_rate_limited';
+                this.crypto15mBooksSnapshot = { ...this.crypto15mBooksSnapshot, lastError: this.crypto15mBooksSnapshot.lastError || err, lastAttemptError: this.crypto15mBooksSnapshot.lastAttemptError || err };
             }
         }
         return this.buildCrypto15mCandidatesFromSnapshots(options);
@@ -6795,6 +7000,8 @@ export class GroupArbitrageScanner {
         for (const [symbol, a] of this.crypto15mHedgeActivesBySymbol.entries()) {
             actives[symbol] = a;
         }
+        this.ensureCrypto15mHedgeSimState();
+        const simSummary = this.computeCrypto15mHedgeSimSummary();
         const tracked = Array.from(this.crypto15mHedgeTrackedByCondition.values())
             .sort((a: any, b: any) => String(b?.startedAt || '').localeCompare(String(a?.startedAt || '')))
             .slice(0, 50);
@@ -6803,6 +7010,7 @@ export class GroupArbitrageScanner {
             trading: this.getTradingInitStatus(),
             enabled: this.crypto15mHedgeAutoEnabled,
             config: this.crypto15mHedgeAutoConfig,
+            sim: simSummary,
             lastScanAt: this.crypto15mHedgeLastScanAt,
             lastError: this.crypto15mHedgeLastError,
             lastDecision: this.crypto15mHedgeLastDecision,
@@ -6814,6 +7022,12 @@ export class GroupArbitrageScanner {
                 loadedAt: this.crypto15mHedgeConfigLoadedAt,
                 persistedAt: this.crypto15mHedgeConfigPersistedAt,
                 lastError: this.crypto15mHedgeConfigPersistLastError,
+            },
+            simPersist: {
+                path: this.crypto15mHedgeSimPath,
+                loadedAt: this.crypto15mHedgeSimLoadedAt,
+                persistedAt: this.crypto15mHedgeSimPersistedAt,
+                lastError: this.crypto15mHedgeSimPersistLastError,
             },
         };
     }
@@ -7051,6 +7265,22 @@ export class GroupArbitrageScanner {
                 : null;
             const sharesToBuyNow = estEntryShares != null && tradableShares != null ? Math.min(estEntryShares, tradableShares) : null;
             const estHedgeUsdNow = sharesToBuyNow != null && hedgeBestAsk != null ? Math.max(0, sharesToBuyNow * hedgeBestAsk) : null;
+            const tfSec = this.getCryptoAllTimeframeSec('15m');
+            const endMsApprox = secondsToExpire != null ? (now + secondsToExpire * 1000) : NaN;
+            const upTokenId = x.entryOutcome === 'Up' ? x.entryTokenId : (x.hedgeOutcome === 'Up' ? x.hedgeTokenId : null);
+            const downTokenId = x.entryOutcome === 'Down' ? x.entryTokenId : (x.hedgeOutcome === 'Down' ? x.hedgeTokenId : null);
+            const upBook = upTokenId ? oppBooksByToken[String(upTokenId)] || null : null;
+            const downBook = downTokenId ? oppBooksByToken[String(downTokenId)] || null : null;
+            const beat = Number.isFinite(endMsApprox)
+                ? await this.fetchCryptoAllBeatAndCurrentFromBinance({ symbol: x.symbol, endMs: endMsApprox, timeframeSec: tfSec }).catch(() => ({ priceToBeat: null, currentPrice: null, deltaAbs: null, error: null }))
+                : { priceToBeat: null, currentPrice: null, deltaAbs: null, error: null };
+            const riskUp = await this.computeCryptoAllRisk({ symbol: x.symbol, timeframeSec: tfSec, endMs: Number.isFinite(endMsApprox) ? endMsApprox : Date.now(), direction: 'Up', beat, book: upBook ? { bestAsk: upBook.bestAsk ?? null, bestBid: upBook.bestBid ?? null, asksCount: upBook.asksCount, bidsCount: upBook.bidsCount } : null }).catch(() => ({ riskScore: null, dojiLikely: null, wickRatio: null, bodyRatio: null, retraceRatio: null, marginPct: null, momentum3m: null, spread: null, reasons: [], error: null }));
+            const riskDown = await this.computeCryptoAllRisk({ symbol: x.symbol, timeframeSec: tfSec, endMs: Number.isFinite(endMsApprox) ? endMsApprox : Date.now(), direction: 'Down', beat, book: downBook ? { bestAsk: downBook.bestAsk ?? null, bestBid: downBook.bestBid ?? null, asksCount: downBook.asksCount, bidsCount: downBook.bidsCount } : null }).catch(() => ({ riskScore: null, dojiLikely: null, wickRatio: null, bodyRatio: null, retraceRatio: null, marginPct: null, momentum3m: null, spread: null, reasons: [], error: null }));
+            const stateClass =
+                (riskUp?.dojiLikely || riskDown?.dojiLikely || ((riskUp?.riskScore ?? 0) >= 50 && (riskDown?.riskScore ?? 0) >= 50)) ? 'range'
+                : ((riskUp?.riskScore ?? 100) <= 20 && (riskDown?.riskScore ?? 0) >= 40) ? 'trend_up'
+                : ((riskDown?.riskScore ?? 100) <= 20 && (riskUp?.riskScore ?? 0) >= 40) ? 'trend_down'
+                : 'mixed';
             opportunities.push({
                 symbol: x.symbol,
                 conditionId: x.conditionId,
@@ -7075,6 +7305,14 @@ export class GroupArbitrageScanner {
                 estHedgeUsdNow,
                 secondEligibleNow,
                 secondReason,
+                state: stateClass,
+                riskUp: riskUp?.riskScore ?? null,
+                riskDown: riskDown?.riskScore ?? null,
+                bodyRatio: (riskUp?.bodyRatio ?? riskDown?.bodyRatio) ?? null,
+                wickRatio: ((riskUp?.wickRatio != null ? Number(riskUp.wickRatio) : null) != null || (riskDown?.wickRatio != null ? Number(riskDown.wickRatio) : null) != null)
+                    ? Math.max(Number(riskUp?.wickRatio ?? 0), Number(riskDown?.wickRatio ?? 0))
+                    : null,
+                momentum3m: riskUp?.momentum3m ?? riskDown?.momentum3m ?? null,
             });
         }
         opportunities.sort((a, b) => {
@@ -7210,16 +7448,20 @@ export class GroupArbitrageScanner {
 
     getCrypto15mHedgeHistory(options?: { maxEntries?: number }) {
         const maxEntries = options?.maxEntries != null ? Math.max(1, Math.min(200, Math.floor(Number(options.maxEntries)))) : 50;
+        this.ensureCrypto15mHedgeSimState();
+        const simSummary = this.computeCrypto15mHedgeSimSummary();
         const list = this.orderHistory
             .filter((e: any) => e && typeof e === 'object' && String(e?.mode || '') === 'crypto15m-hedge')
             .slice(0, maxEntries);
-        return { success: true, history: list };
+        return { success: true, history: list, summary: simSummary, config: { ...this.crypto15mHedgeAutoConfig } };
     }
 
     updateCrypto15mHedgeConfig(config?: Partial<{
         pollMs: number;
         minProb: number;
         amountUsd: number;
+        simEnabled: boolean;
+        simInitialUsdc: number;
         entryRemainingMinSec: number;
         entryRemainingMaxSec: number;
         entryCheapMinCents: number;
@@ -7246,6 +7488,8 @@ export class GroupArbitrageScanner {
         const pollMs = config?.pollMs != null ? Number(config.pollMs) : this.crypto15mHedgeAutoConfig.pollMs;
         const minProb = config?.minProb != null ? Number(config.minProb) : this.crypto15mHedgeAutoConfig.minProb;
         const amountUsd = config?.amountUsd != null ? Number(config.amountUsd) : this.crypto15mHedgeAutoConfig.amountUsd;
+        const simEnabled = config?.simEnabled != null ? (config.simEnabled === true) : ((this.crypto15mHedgeAutoConfig as any).simEnabled === true);
+        const simInitialUsdcRaw = config?.simInitialUsdc != null ? Number(config.simInitialUsdc) : Number((this.crypto15mHedgeAutoConfig as any).simInitialUsdc ?? 1000);
         const entryRemainingMinSecRaw = config?.entryRemainingMinSec != null ? Number(config.entryRemainingMinSec) : this.crypto15mHedgeAutoConfig.entryRemainingMinSec;
         const entryRemainingMaxSecRaw = config?.entryRemainingMaxSec != null ? Number(config.entryRemainingMaxSec) : this.crypto15mHedgeAutoConfig.entryRemainingMaxSec;
         const entryCheapMinCents = config?.entryCheapMinCents != null ? Number(config.entryCheapMinCents) : this.crypto15mHedgeAutoConfig.entryCheapMinCents;
@@ -7280,11 +7524,14 @@ export class GroupArbitrageScanner {
         const profitDecayPerMinCents = Math.max(0.05, Math.min(30, Number.isFinite(profitDecayPerMinCentsRaw) ? profitDecayPerMinCentsRaw : 1));
         const panicHedgeStartSec = Math.max(0, Math.min(900, Math.floor(Number.isFinite(panicHedgeStartSecRaw) ? panicHedgeStartSecRaw : 120)));
         const panicMaxLossCents = Math.max(0, Math.min(200, Number.isFinite(panicMaxLossCentsRaw) ? panicMaxLossCentsRaw : 20));
+        const simInitialUsdc = Math.max(1, Math.min(1_000_000, Number.isFinite(simInitialUsdcRaw) ? simInitialUsdcRaw : 1000));
         this.crypto15mHedgeAutoConfig = {
             pollMs: Math.max(500, Math.floor(Number.isFinite(pollMs) ? pollMs : 2_000)),
             expiresWithinSec: 900,
             minProb: Math.max(0, Math.min(1, Number.isFinite(minProb) ? minProb : 0)),
             amountUsd: Math.max(1, Number.isFinite(amountUsd) ? amountUsd : 1),
+            simEnabled: this.isSimulation ? true : simEnabled,
+            simInitialUsdc,
             entryRemainingMinSec,
             entryRemainingMaxSec,
             entryCheapMinCents: Math.max(1, Math.min(49, Number.isFinite(entryCheapMinCents) ? entryCheapMinCents : 8)),
@@ -7720,6 +7967,7 @@ export class GroupArbitrageScanner {
         stoplossCut1SellPct?: number;
         stoplossCut2DropCents?: number;
         stoplossCut2SellPct?: number;
+        stoplossSpreadGuardCents?: number;
         stoplossMinSecToExit?: number;
         adaptiveDeltaEnabled?: boolean;
         adaptiveDeltaBigMoveMultiplier?: number;
@@ -7746,11 +7994,15 @@ export class GroupArbitrageScanner {
         const stoplossCut1SellPctRaw = config?.stoplossCut1SellPct != null ? Number(config.stoplossCut1SellPct) : this.cryptoAllAutoConfig.stoplossCut1SellPct;
         const stoplossCut2DropCentsRaw = config?.stoplossCut2DropCents != null ? Number(config.stoplossCut2DropCents) : this.cryptoAllAutoConfig.stoplossCut2DropCents;
         const stoplossCut2SellPctRaw = config?.stoplossCut2SellPct != null ? Number(config.stoplossCut2SellPct) : this.cryptoAllAutoConfig.stoplossCut2SellPct;
+        const stoplossSpreadGuardCentsRaw = config?.stoplossSpreadGuardCents != null ? Number(config.stoplossSpreadGuardCents) : this.cryptoAllAutoConfig.stoploss?.spreadGuardCents;
         const stoplossMinSecToExitRaw = config?.stoplossMinSecToExit != null ? Number(config.stoplossMinSecToExit) : this.cryptoAllAutoConfig.stoplossMinSecToExit;
         const adaptiveDeltaEnabled = config?.adaptiveDeltaEnabled != null ? !!config.adaptiveDeltaEnabled : this.cryptoAllAutoConfig.adaptiveDeltaEnabled;
         const adaptiveDeltaBigMoveMultiplierRaw = config?.adaptiveDeltaBigMoveMultiplier != null ? Number(config.adaptiveDeltaBigMoveMultiplier) : this.cryptoAllAutoConfig.adaptiveDeltaBigMoveMultiplier;
         const adaptiveDeltaRevertNoBuyCountRaw = config?.adaptiveDeltaRevertNoBuyCount != null ? Number(config.adaptiveDeltaRevertNoBuyCount) : this.cryptoAllAutoConfig.adaptiveDeltaRevertNoBuyCount;
-        const prevExpByTf = this.cryptoAllAutoConfig.expiresWithinSecByTimeframe || { '5m': this.cryptoAllAutoConfig.expiresWithinSec, '15m': this.cryptoAllAutoConfig.expiresWithinSec, '1h': this.cryptoAllAutoConfig.expiresWithinSec, '4h': this.cryptoAllAutoConfig.expiresWithinSec, '1d': this.cryptoAllAutoConfig.expiresWithinSec };
+        const prevExpByTf =
+            (config?.expiresWithinSec != null && !expiresWithinSecByTimeframeInput)
+                ? { '5m': expiresWithinSecRaw, '15m': expiresWithinSecRaw, '1h': expiresWithinSecRaw, '4h': expiresWithinSecRaw, '1d': expiresWithinSecRaw }
+                : (this.cryptoAllAutoConfig.expiresWithinSecByTimeframe || { '5m': this.cryptoAllAutoConfig.expiresWithinSec, '15m': this.cryptoAllAutoConfig.expiresWithinSec, '1h': this.cryptoAllAutoConfig.expiresWithinSec, '4h': this.cryptoAllAutoConfig.expiresWithinSec, '1d': this.cryptoAllAutoConfig.expiresWithinSec });
         const expiresWithinSecByTimeframe = (['5m', '15m', '1h', '4h', '1d'] as const).reduce((acc: any, tf) => {
             const raw = expiresWithinSecByTimeframeInput && (expiresWithinSecByTimeframeInput as any)[tf] != null ? Number((expiresWithinSecByTimeframeInput as any)[tf]) : Number(prevExpByTf[tf] ?? expiresWithinSecRaw);
             acc[tf] = Math.max(5, Math.floor(Number.isFinite(raw) ? raw : expiresWithinSecRaw));
@@ -7778,6 +8030,7 @@ export class GroupArbitrageScanner {
                 cut1SellPct: Math.max(0, Math.min(100, Math.floor(Number.isFinite(stoplossCut1SellPctRaw) ? stoplossCut1SellPctRaw : this.cryptoAllAutoConfig.stoploss.cut1SellPct))),
                 cut2DropCents: Math.max(0, Math.min(50, Math.floor(Number.isFinite(stoplossCut2DropCentsRaw) ? stoplossCut2DropCentsRaw : this.cryptoAllAutoConfig.stoploss.cut2DropCents))),
                 cut2SellPct: Math.max(0, Math.min(100, Math.floor(Number.isFinite(stoplossCut2SellPctRaw) ? stoplossCut2SellPctRaw : this.cryptoAllAutoConfig.stoploss.cut2SellPct))),
+                spreadGuardCents: Math.max(0, Math.min(50, Math.floor(Number.isFinite(stoplossSpreadGuardCentsRaw) ? stoplossSpreadGuardCentsRaw : this.cryptoAllAutoConfig.stoploss.spreadGuardCents))),
                 minSecToExit: Math.max(0, Math.min(600, Math.floor(Number.isFinite(stoplossMinSecToExitRaw) ? stoplossMinSecToExitRaw : this.cryptoAllAutoConfig.stoploss.minSecToExit))),
             },
             dojiGuardEnabled,
@@ -8653,7 +8906,9 @@ export class GroupArbitrageScanner {
         this.crypto15mHedgeAutoInFlight = true;
         const nowMs = Date.now();
         this.crypto15mHedgeLastScanAt = new Date(nowMs).toISOString();
-        if (!this.hasValidKey) {
+        const simEnabled = this.crypto15mHedgeIsSimEnabled();
+        const simState = simEnabled ? this.ensureCrypto15mHedgeSimState() : null;
+        if (!this.hasValidKey && !simEnabled) {
             this.crypto15mHedgeLastError = 'Missing private key';
             this.crypto15mHedgeAutoInFlight = false;
             return;
@@ -8764,14 +9019,27 @@ export class GroupArbitrageScanner {
             const sharesToBuy = Math.min(remainingShares, tradableShares);
             const amountUsd = Math.max(0.01, sharesToBuy * bestAsk);
             const limitPrice = Math.min(0.999, p2Max);
-            const res = await this.tradingClient.createMarketOrder({ tokenId: hedgeTokenId, side: 'BUY', amount: amountUsd, price: limitPrice, orderType: 'FAK' });
+            const fillPrice = bestAsk;
+            const simFilledShares = simEnabled && simState ? Math.min(sharesToBuy, amountUsd / fillPrice) : null;
+            const res = simEnabled
+                ? { success: true, orderId: `SIM-HEDGE-${Date.now()}` }
+                : await this.tradingClient.createMarketOrder({ tokenId: hedgeTokenId, side: 'BUY', amount: amountUsd, price: limitPrice, orderType: 'FAK' });
             const orderId = res?.orderId != null ? String(res.orderId) : null;
-            const order = orderId ? await waitForOrderFill(orderId) : null;
-            const filledSize = order?.filledSize != null ? Number(order.filledSize) : null;
+            const order = simEnabled
+                ? { status: 'MATCHED', filledSize: simFilledShares }
+                : (orderId ? await waitForOrderFill(orderId) : null);
+            const filledSize = simEnabled ? simFilledShares : (order?.filledSize != null ? Number(order.filledSize) : null);
             const nextFilled = typeof filledSize === 'number' && Number.isFinite(filledSize) ? filledSize : 0;
             const updatedFilled = (Number.isFinite(hedgeFilledShares) ? hedgeFilledShares : 0) + nextFilled;
             const done = Number.isFinite(entryShares) && updatedFilled >= entryShares * 0.98;
-            return { did: true, res, order, remainingSec, profitCents, bufferCents, entryPrice, p2Max, bestAsk, bestBid: Number.isFinite(bestBid) ? bestBid : null, spreadCents, tradableShares, sharesToBuy, amountUsd, filledSize, updatedFilled, done, panicNow };
+            if (simEnabled && simState && nextFilled > 0) {
+                const cur = Number(simState.positionsByTokenId[hedgeTokenId] || 0);
+                simState.positionsByTokenId[hedgeTokenId] = cur + nextFilled;
+                simState.cashUsdc = Math.max(0, Number(simState.cashUsdc) - nextFilled * fillPrice);
+                this.crypto15mHedgeSimState = { ...simState, positionsByTokenId: { ...simState.positionsByTokenId } };
+                this.persistCrypto15mHedgeSimToFile();
+            }
+            return { did: true, sim: simEnabled === true, res, order, remainingSec, profitCents, bufferCents, entryPrice, p2Max, bestAsk, bestBid: Number.isFinite(bestBid) ? bestBid : null, spreadCents, tradableShares, sharesToBuy, amountUsd, filledSize, updatedFilled, done, panicNow };
         };
 
         try {
@@ -8794,6 +9062,7 @@ export class GroupArbitrageScanner {
                         this.crypto15mHedgeAttemptLogState.set(key, { atMs: now2, reason });
                         this.recordCrypto15mHedgeEvent({
                             action: 'crypto15m_hedge_attempt',
+                            sim: simEnabled === true,
                             symbol,
                             conditionId: cid,
                             tokenId: String(active?.hedgeTokenId || ''),
@@ -8821,6 +9090,7 @@ export class GroupArbitrageScanner {
                     this.crypto15mHedgeLastOrderAttempt = { at: new Date().toISOString(), type: 'hedge', symbol, conditionId: cid2, orderId: r?.res?.orderId ?? null, success: r?.res?.success ?? null, errorMsg: r?.res?.errorMsg ?? null, filledSize: r?.filledSize ?? null, p2Max: r?.p2Max ?? null, bestAsk: r?.bestAsk ?? null };
                     this.recordCrypto15mHedgeEvent({
                         action: 'crypto15m_hedge_buy',
+                        sim: simEnabled === true,
                         symbol,
                         conditionId: cid2,
                         tokenId: String(next.hedgeTokenId || ''),
@@ -8850,6 +9120,10 @@ export class GroupArbitrageScanner {
             const cheapMax = Number(this.crypto15mHedgeAutoConfig.entryCheapMaxCents) / 100;
             const remMin = Number(this.crypto15mHedgeAutoConfig.entryRemainingMinSec);
             const remMax = Number(this.crypto15mHedgeAutoConfig.entryRemainingMaxSec);
+            const cheapMinEff = simEnabled ? 0 : cheapMin;
+            const cheapMaxEff = simEnabled ? 1 : cheapMax;
+            const remMinEff = simEnabled ? 0 : remMin;
+            const remMaxEff = simEnabled ? 900 : remMax;
 
             for (const symbol of ['BTC', 'ETH', 'SOL', 'XRP']) {
                 if (this.crypto15mHedgeActivesBySymbol.has(symbol)) continue;
@@ -8858,12 +9132,12 @@ export class GroupArbitrageScanner {
                     if (c?.secondsToExpire == null) return false;
                     const s = Number(c.secondsToExpire);
                     if (!Number.isFinite(s)) return false;
-                    if (s < remMin || s > remMax) return false;
+                    if (s < remMinEff || s > remMaxEff) return false;
                     if (!Array.isArray(c?.prices) || c.prices.length < 2) return false;
                     const p0 = Number(c.prices[0]);
                     const p1 = Number(c.prices[1]);
-                    const ok0 = Number.isFinite(p0) && p0 >= cheapMin && p0 <= cheapMax;
-                    const ok1 = Number.isFinite(p1) && p1 >= cheapMin && p1 <= cheapMax;
+                    const ok0 = Number.isFinite(p0) && p0 >= cheapMinEff && p0 <= cheapMaxEff;
+                    const ok1 = Number.isFinite(p1) && p1 >= cheapMinEff && p1 <= cheapMaxEff;
                     if (!ok0 && !ok1) return false;
                     if (c?.booksError || c?.marketsError) return false;
                     return true;
@@ -8875,18 +9149,41 @@ export class GroupArbitrageScanner {
                 const tokenIds = Array.isArray(pick.tokenIds) ? pick.tokenIds : [];
                 const outcomes = Array.isArray(pick.outcomes) ? pick.outcomes : [];
                 if (tokenIds.length < 2 || outcomes.length < 2) continue;
+                const expiresAtMs = Number(pick.endMs) || (Date.now() + Number(pick.secondsToExpire || 0) * 1000);
+                const orderLockKey = `${symbol}:${expiresAtMs}`;
                 const p0 = Number(pick.prices[0]);
                 const p1 = Number(pick.prices[1]);
-                const idxEntry =
-                    Number.isFinite(p0) && p0 >= cheapMin && p0 <= cheapMax && !(Number.isFinite(p1) && p1 >= cheapMin && p1 <= cheapMax) ? 0
-                    : Number.isFinite(p1) && p1 >= cheapMin && p1 <= cheapMax && !(Number.isFinite(p0) && p0 >= cheapMin && p0 <= cheapMax) ? 1
-                    : (Number.isFinite(p0) && Number.isFinite(p1) && p0 <= p1 ? 0 : 1);
+                const idxUp = outcomes.findIndex((s: any) => String(s) === 'Up');
+                const idxDown = outcomes.findIndex((s: any) => String(s) === 'Down');
+                let stateClass: 'range' | 'trend_up' | 'trend_down' | 'mixed' = 'mixed';
+                let idxEntry =
+                    (Number.isFinite(p0) && p0 >= cheapMinEff && p0 <= cheapMaxEff && !(Number.isFinite(p1) && p1 >= cheapMinEff && p1 <= cheapMaxEff) ? 0
+                        : Number.isFinite(p1) && p1 >= cheapMinEff && p1 <= cheapMaxEff && !(Number.isFinite(p0) && p0 >= cheapMinEff && p0 <= cheapMaxEff) ? 1
+                        : (Number.isFinite(p0) && Number.isFinite(p1) && p0 <= p1 ? 0 : 1));
+                if (!simEnabled) {
+                    const tfSec = this.getCryptoAllTimeframeSec('15m');
+                    const endMsApprox = expiresAtMs;
+                    const beatNull = { priceToBeat: null, currentPrice: null, deltaAbs: null, error: null };
+                    const riskUp = await this.computeCryptoAllRisk({ symbol, timeframeSec: tfSec, endMs: endMsApprox, direction: 'Up', beat: beatNull, book: null }).catch(() => ({ riskScore: null, dojiLikely: null, wickRatio: null, bodyRatio: null, retraceRatio: null, marginPct: null, momentum3m: null, spread: null, reasons: [], error: null }));
+                    const riskDown = await this.computeCryptoAllRisk({ symbol, timeframeSec: tfSec, endMs: endMsApprox, direction: 'Down', beat: beatNull, book: null }).catch(() => ({ riskScore: null, dojiLikely: null, wickRatio: null, bodyRatio: null, retraceRatio: null, marginPct: null, momentum3m: null, spread: null, reasons: [], error: null }));
+                    stateClass = (riskUp?.dojiLikely || riskDown?.dojiLikely || ((riskUp?.riskScore ?? 0) >= 50 && (riskDown?.riskScore ?? 0) >= 50)) ? 'range'
+                        : ((riskUp?.riskScore ?? 100) <= 20 && (riskDown?.riskScore ?? 0) >= 40) ? 'trend_up'
+                        : ((riskDown?.riskScore ?? 100) <= 20 && (riskUp?.riskScore ?? 0) >= 40) ? 'trend_down'
+                        : 'mixed';
+                    if (stateClass === 'range') { this.crypto15mHedgeOrderLocks.set(orderLockKey, { atMs: Date.now(), symbol, expiresAtMs, conditionId: cid, status: 'failed' }); continue; }
+                    idxEntry =
+                        (stateClass === 'trend_up' && idxUp >= 0) ? idxUp
+                        : (stateClass === 'trend_down' && idxDown >= 0) ? idxDown
+                        : idxEntry;
+                    const riskChosen = idxEntry === idxUp ? riskUp : riskDown;
+                    if ((riskChosen?.riskScore ?? 100) > 20) { this.crypto15mHedgeOrderLocks.set(orderLockKey, { atMs: Date.now(), symbol, expiresAtMs, conditionId: cid, status: 'failed' }); continue; }
+                    if (!((Number(riskChosen?.bodyRatio ?? 0) >= 0.2) && (Number(riskChosen?.wickRatio ?? 1) < 0.5))) { this.crypto15mHedgeOrderLocks.set(orderLockKey, { atMs: Date.now(), symbol, expiresAtMs, conditionId: cid, status: 'failed' }); continue; }
+                    if (riskChosen?.momentum3m != null && Number(riskChosen.momentum3m) < 0) { this.crypto15mHedgeOrderLocks.set(orderLockKey, { atMs: Date.now(), symbol, expiresAtMs, conditionId: cid, status: 'failed' }); continue; }
+                }
                 const idxHedge = idxEntry === 0 ? 1 : 0;
                 const entryTokenId = String(tokenIds[idxEntry] || '').trim();
                 const hedgeTokenId = String(tokenIds[idxHedge] || '').trim();
                 if (!entryTokenId || !hedgeTokenId) continue;
-                const expiresAtMs = Number(pick.endMs) || (Date.now() + Number(pick.secondsToExpire || 0) * 1000);
-                const orderLockKey = `${symbol}:${expiresAtMs}`;
                 const locked = this.crypto15mHedgeOrderLocks.get(orderLockKey);
                 if (locked && locked.status === 'placing') continue;
                 this.crypto15mHedgeOrderLocks.set(orderLockKey, { atMs: Date.now(), symbol, expiresAtMs, conditionId: cid, status: 'placing' });
@@ -8896,9 +9193,25 @@ export class GroupArbitrageScanner {
                 const bestAsk = best.bestAsk != null ? Number(best.bestAsk) : NaN;
                 const bestBid = best.bestBid != null ? Number(best.bestBid) : NaN;
                 const spreadCents = best.spreadCents != null ? Number(best.spreadCents) : null;
-                if (!Number.isFinite(bestAsk) || bestAsk <= 0) {
-                    this.crypto15mHedgeOrderLocks.set(orderLockKey, { atMs: Date.now(), symbol, expiresAtMs, conditionId: cid, status: 'failed' });
-                    continue;
+                const remainingSec0 = Number(pick.secondsToExpire != null ? pick.secondsToExpire : null);
+                const profitCents0 = this.computeCrypto15mHedgeEffectiveProfitCents(Number.isFinite(remainingSec0) ? remainingSec0 : null, this.crypto15mHedgeAutoConfig);
+                const bufferCents0 = Number(this.crypto15mHedgeAutoConfig.bufferCents);
+                const p2MaxCheck = Math.min(0.999, 1 - (profitCents0 / 100) - (bufferCents0 / 100) - bestAsk);
+                if (stateClass === 'trend_up' || stateClass === 'trend_down') {
+                    const hedgeBooks0 = await this.fetchClobBooks([hedgeTokenId]);
+                    const hedgeBest0 = computeBest(hedgeBooks0 && hedgeBooks0.length ? hedgeBooks0[0] : null);
+                    const hedgeBestAsk0 = hedgeBest0.bestAsk != null ? Number(hedgeBest0.bestAsk) : NaN;
+                    if (!Number.isFinite(p2MaxCheck) || !(p2MaxCheck > 0) || (Number.isFinite(hedgeBestAsk0) && hedgeBestAsk0 > p2MaxCheck)) {
+                        this.crypto15mHedgeLastDecision = { at: new Date().toISOString(), type: 'entry', symbol, conditionId: cid, reason: 'p2max_unviable', bestAsk, hedgeBestAsk: Number.isFinite(hedgeBestAsk0) ? hedgeBestAsk0 : null, p2MaxCheck };
+                        this.crypto15mHedgeOrderLocks.set(orderLockKey, { atMs: Date.now(), symbol, expiresAtMs, conditionId: cid, status: 'failed' });
+                        continue;
+                    }
+                }
+                // Fix: Strict validation for bestAsk to prevent 'BUY 0' signals
+                if (!Number.isFinite(bestAsk) || bestAsk <= 0.0001) {
+                    // Log debug info if needed, but definitely skip
+                    this.crypto15mHedgeOrderLocks.set(orderLockKey, { atMs: Date.now(), symbol, expiresAtMs, conditionId: cid, status: 'failed' }); 
+                    continue; 
                 }
                 const amountUsd = Number(this.crypto15mHedgeAutoConfig.amountUsd) || 1;
                 const limitPrice = Math.min(0.999, bestAsk + 0.02);
@@ -8922,12 +9235,25 @@ export class GroupArbitrageScanner {
                     });
                     continue;
                 }
-                const res = await this.tradingClient.createMarketOrder({ tokenId: entryTokenId, side: 'BUY', amount: amountUsd, price: limitPrice, orderType: 'FAK' });
+                const fillPrice = bestAsk;
+                const simFilledShares = simEnabled && simState ? (amountUsd / fillPrice) : null;
+                const res = simEnabled
+                    ? { success: true, orderId: `SIM-ENTRY-${Date.now()}` }
+                    : await this.tradingClient.createMarketOrder({ tokenId: entryTokenId, side: 'BUY', amount: amountUsd, price: limitPrice, orderType: 'FAK' });
                 const orderId = res?.orderId != null ? String(res.orderId) : null;
-                const order = orderId ? await waitForOrderFill(orderId) : null;
-                const filledSize = order?.filledSize != null ? Number(order.filledSize) : null;
+                const order = simEnabled
+                    ? { status: 'MATCHED', filledSize: simFilledShares }
+                    : (orderId ? await waitForOrderFill(orderId) : null);
+                const filledSize = simEnabled ? simFilledShares : (order?.filledSize != null ? Number(order.filledSize) : null);
                 const filled = typeof filledSize === 'number' && Number.isFinite(filledSize) && filledSize > 0 ? filledSize : null;
                 const entryFilledShares = filled != null ? filled : (amountUsd / bestAsk);
+                if (simEnabled && simState && entryFilledShares > 0) {
+                    const cur = Number(simState.positionsByTokenId[entryTokenId] || 0);
+                    simState.positionsByTokenId[entryTokenId] = cur + entryFilledShares;
+                    simState.cashUsdc = Math.max(0, Number(simState.cashUsdc) - entryFilledShares * fillPrice);
+                    this.crypto15mHedgeSimState = { ...simState, positionsByTokenId: { ...simState.positionsByTokenId } };
+                    this.persistCrypto15mHedgeSimToFile();
+                }
                 const entryOutcome = String(outcomes[idxEntry] || '');
                 const hedgeOutcome = String(outcomes[idxHedge] || '');
                 const active = {
@@ -8960,6 +9286,7 @@ export class GroupArbitrageScanner {
                 this.crypto15mHedgeLastOrderAttempt = { at: new Date().toISOString(), type: 'entry', symbol, conditionId: cid, orderId, success: res?.success ?? null, errorMsg: res?.errorMsg ?? null, entryPrice: bestAsk, limitPrice, entryFilledShares };
                 this.recordCrypto15mHedgeEvent({
                     action: 'crypto15m_hedge_entry',
+                    sim: simEnabled === true,
                     symbol,
                     conditionId: cid,
                     slug: pick.slug ?? null,
@@ -10711,6 +11038,7 @@ export class GroupArbitrageScanner {
     }
 
     private async refreshCryptoAllMarketSnapshot(params: { symbols: string[]; timeframes: Array<'5m' | '15m' | '1h' | '4h' | '1d'>; limit: number }) {
+        // console.log('[Debug] Refreshing Market Snapshot...', params);
         const key = JSON.stringify({ symbols: params.symbols.slice().sort(), timeframes: params.timeframes.slice().sort(), limit: params.limit });
         if (this.cryptoAllMarketInFlight) return this.cryptoAllMarketInFlight;
         if ((this.cryptoAllMarketSnapshot as any).key === key && this.cryptoAllMarketSnapshot.atMs && Date.now() - this.cryptoAllMarketSnapshot.atMs < 5_000) return;
@@ -10718,6 +11046,7 @@ export class GroupArbitrageScanner {
         this.cryptoAllMarketInFlight = (async () => {
             this.cryptoAllMarketSnapshot = { ...this.cryptoAllMarketSnapshot, lastAttemptAtMs: Date.now(), lastAttemptError: null };
             try {
+                // console.log('[Debug] Fetching Gamma for', params);
                 const symbols = params.symbols;
                 const timeframes = params.timeframes;
                 const limit = params.limit;
@@ -11032,12 +11361,9 @@ export class GroupArbitrageScanner {
                 }
                 const uniqMarketRefs = Array.from(perTfSym.values());
                 const prevMarketsAll = Array.isArray(this.cryptoAllMarketSnapshot.markets) ? this.cryptoAllMarketSnapshot.markets : [];
-                if (!uniqMarketRefs.length && prevMarketsAll.length) {
-                    (this.cryptoAllMarketSnapshot as any).key = key;
-                    this.cryptoAllMarketSnapshot = { ...this.cryptoAllMarketSnapshot, lastAttemptError: 'empty_market_snapshot' };
-                    (this.cryptoAllMarketSnapshot as any).diag = { ...diag, warning: 'empty_market_snapshot' };
-                    return;
-                }
+                // Fix: Do NOT return early if uniqMarketRefs is empty. Proceed to merge with previous markets and update atMs.
+                // This prevents 'stale' status when Gamma API returns no new markets but we have valid cached ones.
+                
                 const mergedMap = new Map<string, any>();
                 for (const pm of prevMarketsAll) {
                     if (!pm) continue;
@@ -11079,7 +11405,8 @@ export class GroupArbitrageScanner {
                 const next = this.cryptoAllMarketBackoffMs ? Math.min(30_000, this.cryptoAllMarketBackoffMs * 2) : 1000;
                 this.cryptoAllMarketBackoffMs = next;
                 this.cryptoAllMarketNextAllowedAtMs = Date.now() + next;
-                this.cryptoAllMarketSnapshot = { ...this.cryptoAllMarketSnapshot, lastError: msg, lastAttemptError: msg };
+                // Update atMs even on error to prevent immediate retry loop and stale status
+                this.cryptoAllMarketSnapshot = { ...this.cryptoAllMarketSnapshot, atMs: Date.now(), lastError: msg, lastAttemptError: msg };
                 (this.cryptoAllMarketSnapshot as any).diag = { atMs: Date.now(), key, error: msg };
             } finally {
                 this.cryptoAllMarketInFlight = null;
@@ -11176,7 +11503,9 @@ export class GroupArbitrageScanner {
                 const next = this.cryptoAllBooksBackoffMs ? Math.min(30_000, this.cryptoAllBooksBackoffMs * 2) : 1000;
                 this.cryptoAllBooksBackoffMs = next;
                 this.cryptoAllBooksNextAllowedAtMs = Date.now() + next;
-                this.cryptoAllBooksSnapshot = { ...this.cryptoAllBooksSnapshot, lastError: msg, lastAttemptError: msg };
+                // Update atMs even on error to prevent immediate retry loop (stale check passes for a bit)
+                // But keep the error visible
+                this.cryptoAllBooksSnapshot = { ...this.cryptoAllBooksSnapshot, atMs: Date.now(), lastError: msg, lastAttemptError: msg };
             } finally {
                 this.cryptoAllBooksInFlight = null;
             }
@@ -11441,13 +11770,15 @@ export class GroupArbitrageScanner {
         const needMarket = marketAt <= 0;
         const needBooks = booksAt <= 0;
         const marketStale = !needMarket && (now - marketAt) > 5_000;
+        const marketVeryStale = !needMarket && (now - marketAt) > 15_000;
         const booksStale = !needBooks && (now - booksAt) > 1_500;
+        const booksVeryStale = !needBooks && (now - booksAt) > 5_000;
         const booksEmpty = !Object.keys(this.cryptoAllBooksSnapshot.byTokenId || {}).length;
 
-        if (needMarket) await this.refreshCryptoAllMarketSnapshot({ symbols, timeframes, limit }).catch(() => {});
+        if (needMarket || marketVeryStale) await this.refreshCryptoAllMarketSnapshot({ symbols, timeframes, limit }).catch(() => {});
         else if (marketStale) this.refreshCryptoAllMarketSnapshot({ symbols, timeframes, limit }).catch(() => {});
 
-        if (needBooks || booksEmpty) await this.refreshCryptoAllBooksSnapshot({ symbols, timeframes, limit }).catch(() => {});
+        if (needBooks || booksEmpty || booksVeryStale) await this.refreshCryptoAllBooksSnapshot({ symbols, timeframes, limit }).catch(() => {});
         else if (booksStale) this.refreshCryptoAllBooksSnapshot({ symbols, timeframes, limit }).catch(() => {});
         return await this.buildCryptoAllCandidatesFromSnapshots({ symbols, timeframes, minProb, expiresWithinSec, expiresWithinSecByTimeframe, limit });
     }
@@ -11492,6 +11823,11 @@ export class GroupArbitrageScanner {
         adaptiveDeltaBigMoveMultiplier?: number;
         adaptiveDeltaRevertNoBuyCount?: number;
     }) {
+        if (this.hasValidKey !== true && config?.dryRun !== true && this.cryptoAllAutoDryRun !== true) {
+            this.cryptoAllLastError = 'missing_private_key';
+            this.cryptoAllAutoEnabled = false;
+            return this.getCryptoAllStatus();
+        }
         if (this.autoRedeemConfig.enabled !== true) {
             this.setAutoRedeemConfig({ enabled: true, persist: true });
         }
@@ -11500,7 +11836,7 @@ export class GroupArbitrageScanner {
         this.ensureCryptoAllSplitBuyLoop();
 
         this.cryptoAllAutoEnabled = true;
-        this.recordAutoConfigEvent('cryptoall', 'start', { enabled: true, dryRun: this.cryptoAllAutoDryRun === true, ...this.cryptoAllAutoConfig });
+        this.recordAutoConfigEvent('cryptoall', 'start', { enabled: true, dryRun: this.cryptoAllAutoDryRun === true, ...this.cryptoAllAutoConfig, deltaThresholds: this.getCryptoAllDeltaThresholds() });
         this.startCryptoAllStoplossLoop();
         if (this.cryptoAllAutoTimer) {
             clearInterval(this.cryptoAllAutoTimer);
@@ -11532,6 +11868,7 @@ export class GroupArbitrageScanner {
     async runCryptoAllAutoOnce(options?: { dryRun?: boolean; minProb?: number; expiresWithinSec?: number; amountUsd?: number; symbols?: string[]; timeframes?: Array<'5m' | '15m' | '1h' | '4h' | '1d'> | string[] }) {
         const prevEnabled = this.cryptoAllAutoEnabled;
         const prevDryRun = this.cryptoAllAutoDryRun;
+        // Correctly clone config to avoid reference issues
         const prevConfig = JSON.parse(JSON.stringify(this.cryptoAllAutoConfig || {}));
         try {
             this.cryptoAllAutoEnabled = true;
@@ -11675,8 +12012,8 @@ export class GroupArbitrageScanner {
             for (const c of candidates) {
                 const sym = String(c?.symbol || '');
                 const tf = String(c?.timeframe || '');
-                if (!c.meetsMinProb) { decisions.push({ symbol: sym, timeframe: tf, action: 'skip', reason: 'min_prob' }); continue; }
-                if (!c.meetsMinDelta) { decisions.push({ symbol: sym, timeframe: tf, action: 'skip', reason: 'min_delta' }); continue; }
+                if (!c.meetsMinProb) { decisions.push({ symbol: sym, timeframe: tf, action: 'skip', reason: 'min_prob', prob: c.chosenPrice, minProb: this.cryptoAllAutoConfig.minProb }); continue; }
+                if (!c.meetsMinDelta) { decisions.push({ symbol: sym, timeframe: tf, action: 'skip', reason: 'min_delta', delta: c.deltaAbs, minDelta: c.minDeltaRequired, secondsToExpire: c.secondsToExpire, error: c.deltaError }); continue; }
                 if (!c.chosen) { decisions.push({ symbol: sym, timeframe: tf, action: 'skip', reason: 'no_chosen' }); continue; }
                 if (c.riskScore >= this.cryptoAllAutoConfig.riskSkipScore) { decisions.push({ symbol: sym, timeframe: tf, action: 'skip', reason: 'risk', riskScore: c.riskScore }); continue; }
                 if (this.cryptoAllAutoConfig.dojiGuardEnabled && c.dojiLikely) { decisions.push({ symbol: sym, timeframe: tf, action: 'skip', reason: 'doji' }); continue; }
@@ -12423,7 +12760,7 @@ export class GroupArbitrageScanner {
             let orderId: string | null = null;
             let orderErrorMsg: string | null = null;
             try {
-                const result = await this.tradingClient.createMarketOrder({ tokenId, amountUsd, limitPrice, side: 'BUY' });
+                const result = await this.tradingClient.createMarketOrder({ tokenId, side: 'BUY', amount: amountUsd, price: limitPrice, orderType: 'FAK' });
                 ok = !!(result as any)?.success;
                 orderId = (result as any)?.orderId || null;
                 orderErrorMsg = (result as any)?.errorMsg != null ? String((result as any).errorMsg) : ((result as any)?.error != null ? String((result as any).error) : null);

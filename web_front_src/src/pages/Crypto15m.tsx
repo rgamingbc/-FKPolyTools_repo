@@ -64,6 +64,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const settingsKey = String(props.settingsKey || 'crypto15m_settings_v1');
     const pageTitle = String(props.title || '⏱️ 15mins Crypto Trade');
     const apiPath = useAccountApiPath();
+    const accountScopeKey = useMemo(() => apiPath('/'), [apiPath]);
     const abortersRef = useRef<Map<string, AbortController>>(new Map());
     const apiGet = useCallback((key: string, p: string, config?: any) => {
         const prev = abortersRef.current.get(key);
@@ -106,6 +107,26 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const [autoRefresh, setAutoRefresh] = useState(() => !safeMode);
     const [showPendingOnly, setShowPendingOnly] = useState(false);
     const [editing, setEditing] = useState(false);
+    const editingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const beginEditing = useCallback(() => {
+        if (editingTimerRef.current) clearTimeout(editingTimerRef.current);
+        editingTimerRef.current = null;
+        setEditing(true);
+    }, []);
+    const bumpEditing = useCallback(() => {
+        if (editingTimerRef.current) clearTimeout(editingTimerRef.current);
+        setEditing(true);
+        editingTimerRef.current = setTimeout(() => setEditing(false), 1200);
+    }, []);
+    const endEditingSoon = useCallback(() => {
+        if (editingTimerRef.current) clearTimeout(editingTimerRef.current);
+        editingTimerRef.current = setTimeout(() => setEditing(false), 250);
+    }, []);
+    useEffect(() => {
+        return () => {
+            if (editingTimerRef.current) clearTimeout(editingTimerRef.current);
+        };
+    }, []);
     const [pollMs, setPollMs] = useState<number>(() => safeMode ? 5000 : 1000);
     const [minProb, setMinProb] = useState<number>(0.9);
     const [expiresWithinSec, setExpiresWithinSec] = useState<number>(180);
@@ -233,6 +254,16 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const analysisTradeAskRef = useRef<any>(null);
     const analysisTradeD999Ref = useRef<any>(null);
     const analysisTradeCapLineRef = useRef<any>(null);
+
+    useEffect(() => {
+        if (!settingsHydrated) return;
+        if (!deltaBoxAutoConfirmEnabled) return;
+        deltaBoxAutoConfirmLastSavedAtMsRef.current = 0;
+        deltaBoxAutoConfirmLastSavedKeyRef.current = '';
+        deltaBoxAutoConfirmInFlightRef.current = false;
+        setDeltaBoxAutoConfirmLastError(null);
+        setDeltaBoxAutoConfirmLastSavedAt(null);
+    }, [settingsHydrated, deltaBoxAutoConfirmEnabled, accountScopeKey, variant]);
 
     const copyText = useCallback(async (text: string) => {
         try {
@@ -1133,6 +1164,11 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
             try { c.abort(); } catch {}
         }
         abortersRef.current.clear();
+        deltaBoxAutoConfirmLastSavedKeyRef.current = '';
+        deltaBoxAutoConfirmLastSavedAtMsRef.current = 0;
+        deltaBoxAutoConfirmInFlightRef.current = false;
+        setDeltaBoxAutoConfirmLastError(null);
+        setDeltaBoxAutoConfirmLastSavedAt(null);
         candidatesSigRef.current = '';
         candidatesMetaSigRef.current = '';
         historySigRef.current = '';
@@ -1731,9 +1767,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         if (v == null) return '-';
         const n = Number(v);
         if (!Number.isFinite(n)) return '-';
-        const a = Math.abs(n);
-        const d = a >= 100 ? 0 : a >= 1 ? 2 : a >= 0.01 ? 4 : 6;
-        return n.toFixed(d);
+        return n.toFixed(5);
     };
     const fmtSec = (v: any) => {
         if (v == null) return '-';
@@ -1900,7 +1934,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                             }
                             return { btcMinDelta: nextBtc, ethMinDelta: nextEth, solMinDelta: nextSol, xrpMinDelta: nextXrp };
                         })();
-                    const payloadKey = JSON.stringify({ endpoint, payload });
+                    const payloadKey = JSON.stringify({ accountScopeKey, endpoint, payload });
                     const prevKey = deltaBoxAutoConfirmLastSavedKeyRef.current;
                     const minChangePct = Math.max(0, Math.min(100, Number(deltaBoxAutoConfirmMinChangePct) || 0));
                     let changeOk = true;
@@ -1967,7 +2001,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 }
             }
         }
-    }, [settingsHydrated, deltaBoxData, deltaBoxApplyBySymbol, deltaBoxExpireApply, variant, deltaBoxAutoConfirmEnabled, deltaBoxAutoConfirmMinIntervalSec, deltaBoxAutoConfirmMinChangePct, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta, cryptoAllDeltaByTimeframe, allSettingsOpen]);
+    }, [settingsHydrated, deltaBoxData, deltaBoxApplyBySymbol, deltaBoxExpireApply, variant, deltaBoxAutoConfirmEnabled, deltaBoxAutoConfirmMinIntervalSec, deltaBoxAutoConfirmMinChangePct, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta, cryptoAllDeltaByTimeframe, allSettingsOpen, accountScopeKey]);
 
     return (
         <div>
@@ -2027,6 +2061,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                     message="請先啟動 Watchdog（只會手動停止），再啟動 Auto Order。"
                     showIcon
                 />
+                <div onFocusCapture={beginEditing} onBlurCapture={endEditingSoon} onKeyDownCapture={bumpEditing} onMouseDownCapture={bumpEditing}>
                 <Space wrap>
                     <span style={{ color: '#ddd' }}>Min Prob</span>
                     <InputNumber
@@ -2173,8 +2208,8 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                         max={5000}
                         step={250}
                         value={pollMs}
-                        onFocus={() => setEditing(true)}
-                        onBlur={() => setEditing(false)}
+                        onFocus={beginEditing}
+                        onBlur={endEditingSoon}
                         onChange={(v) => setPollMs(Math.max(500, Math.floor(Number(v))))}
                     />
                     <Button onClick={() => setShowPendingOnly((v) => !v)} type={showPendingOnly ? 'primary' : 'default'}>
@@ -2214,6 +2249,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                         Reset Active
                     </Button>
                 </Space>
+                </div>
             {status?.lastError ? (
                 <Alert style={{ marginTop: 12 }} type="error" message={String(status.lastError)} description={String(status.lastError || '').startsWith('books_stale:') ? 'CLOB orderbook 快照過舊：代表後端無法抓到 clob.polymarket.com/books。Outcomes 會顯示 0.0c/no-asks 並且 Auto 會安全停單。' : undefined} showIcon />
             ) : null}
@@ -2302,16 +2338,16 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                                             return (
                                                 <span key={tf} style={{ marginRight: 12, fontSize: 12, color: '#ccc' }}>
                                                     <Tag style={{ marginRight: 4 }} color="geekblue">{String(tf).toUpperCase()}</Tag>
-                                                    BTC:{r.btcMinDelta ?? '-'} ETH:{r.ethMinDelta ?? '-'} SOL:{r.solMinDelta ?? '-'} XRP:{r.xrpMinDelta ?? '-'}
+                                                    BTC:{fmtNum(r.btcMinDelta)} ETH:{fmtNum(r.ethMinDelta)} SOL:{fmtNum(r.solMinDelta)} XRP:{fmtNum(r.xrpMinDelta)}
                                                 </span>
                                             );
                                         })
                                     ) : (
                                         <span style={{ color: '#ccc', fontSize: 13 }}>
-                                            <span style={{ marginRight: 12 }}>BTC: <span style={{ color: '#fff', fontWeight: 600 }}>{savedDeltaThresholds?.btcMinDelta ?? '-'}</span></span>
-                                            <span style={{ marginRight: 12 }}>ETH: <span style={{ color: '#fff', fontWeight: 600 }}>{savedDeltaThresholds?.ethMinDelta ?? '-'}</span></span>
-                                            <span style={{ marginRight: 12 }}>SOL: <span style={{ color: '#fff', fontWeight: 600 }}>{savedDeltaThresholds?.solMinDelta ?? '-'}</span></span>
-                                            <span style={{ marginRight: 12 }}>XRP: <span style={{ color: '#fff', fontWeight: 600 }}>{savedDeltaThresholds?.xrpMinDelta ?? '-'}</span></span>
+                                            <span style={{ marginRight: 12 }}>BTC: <span style={{ color: '#fff', fontWeight: 600 }}>{fmtNum(savedDeltaThresholds?.btcMinDelta)}</span></span>
+                                            <span style={{ marginRight: 12 }}>ETH: <span style={{ color: '#fff', fontWeight: 600 }}>{fmtNum(savedDeltaThresholds?.ethMinDelta)}</span></span>
+                                            <span style={{ marginRight: 12 }}>SOL: <span style={{ color: '#fff', fontWeight: 600 }}>{fmtNum(savedDeltaThresholds?.solMinDelta)}</span></span>
+                                            <span style={{ marginRight: 12 }}>XRP: <span style={{ color: '#fff', fontWeight: 600 }}>{fmtNum(savedDeltaThresholds?.xrpMinDelta)}</span></span>
                                         </span>
                                     )}
                                     <span style={{ color: '#666', fontSize: 12 }}>
@@ -2785,7 +2821,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                             const tf = String((r as any)?.timeframe || '');
                             return cid ? `${tf}:${cid}` : `${tf}:${String((r as any)?.slug || '')}:${String((r as any)?.symbol || '')}`;
                         }}
-                        loading={candidatesLoading}
+                        loading={candidatesLoading && (Array.isArray(candidates) ? candidates.length : 0) === 0}
                         dataSource={candidates}
                         columns={columns as any}
                         pagination={false}
@@ -2870,7 +2906,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                         const extra = x?.txHash ?? x?.hash ?? '';
                         return `${String(x?.strategy || '')}:${String(ts)}:${String(mid)}:${String(out)}:${String(extra)}`;
                     }}
-                    loading={historyLoading}
+                    loading={historyLoading && (Array.isArray(historyView) ? historyView.length : 0) === 0}
                     dataSource={historyView}
                     columns={historyColumns as any}
                     pagination={false}
@@ -2906,7 +2942,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
             >
                 <Table
                     rowKey={(r) => String((r as any)?.id ?? `${String((r as any)?.timestamp ?? '')}:${String((r as any)?.symbol ?? '')}:${String((r as any)?.reason ?? '')}:${String((r as any)?.marketId ?? (r as any)?.conditionId ?? '')}`)}
-                    loading={stoplossLoading}
+                    loading={stoplossLoading && (Array.isArray(stoplossHistory) ? stoplossHistory.length : 0) === 0}
                     dataSource={stoplossHistory}
                     columns={stoplossColumns as any}
                     pagination={false}
@@ -2952,7 +2988,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                         <Table
                             className="compact-antd-table"
                             rowKey={(r: any) => String(r.offsetSec)}
-                            loading={analysisLoading}
+                            loading={analysisLoading && (Array.isArray(analysisData?.timeline) ? analysisData.timeline.length : 0) === 0}
                             dataSource={Array.isArray(analysisData?.timeline) ? analysisData.timeline : []}
                             pagination={false}
                             size="small"
@@ -2984,7 +3020,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                                 <Table
                                     className="compact-antd-table"
                                     rowKey={(r: any) => String(r.sec)}
-                                    loading={analysisLoading}
+                                    loading={analysisLoading && (Array.isArray(analysisData?.tradeDetail?.book60s) ? analysisData.tradeDetail.book60s.length : 0) === 0}
                                     dataSource={Array.isArray(analysisData.tradeDetail.book60s) ? analysisData.tradeDetail.book60s : []}
                                     pagination={false}
                                     size="small"

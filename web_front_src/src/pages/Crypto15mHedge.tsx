@@ -45,10 +45,35 @@ function Crypto15mHedge() {
     const [refreshLoading, setRefreshLoading] = useState(false);
     const [startLoading, setStartLoading] = useState(false);
     const [stopLoading, setStopLoading] = useState(false);
+    const [editing, setEditing] = useState(false);
+    const editingRef = useRef(false);
+    const editingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const beginEditing = useCallback(() => {
+        if (editingTimerRef.current) clearTimeout(editingTimerRef.current);
+        editingTimerRef.current = null;
+        setEditing(true);
+    }, []);
+    const bumpEditing = useCallback(() => {
+        if (editingTimerRef.current) clearTimeout(editingTimerRef.current);
+        setEditing(true);
+        editingTimerRef.current = setTimeout(() => setEditing(false), 1200);
+    }, []);
+    const endEditingSoon = useCallback(() => {
+        if (editingTimerRef.current) clearTimeout(editingTimerRef.current);
+        editingTimerRef.current = setTimeout(() => setEditing(false), 250);
+    }, []);
+    useEffect(() => { editingRef.current = editing; }, [editing]);
+    useEffect(() => {
+        return () => {
+            if (editingTimerRef.current) clearTimeout(editingTimerRef.current);
+        };
+    }, []);
 
     const [pollMs, setPollMs] = useState<number>(2000);
     const [minProb, setMinProb] = useState<number>(0);
     const [amountUsd, setAmountUsd] = useState<number>(200);
+    const [simEnabled, setSimEnabled] = useState<boolean>(false);
+    const [simInitialUsdc, setSimInitialUsdc] = useState<number>(1000);
     const [entryStartSec, setEntryStartSec] = useState<number>(900);
     const [entryEndSec, setEntryEndSec] = useState<number>(480);
     const [cheapMinCents, setCheapMinCents] = useState<number>(8);
@@ -83,6 +108,8 @@ function Crypto15mHedge() {
             pollMs,
             minProb,
             amountUsd,
+            simEnabled,
+            simInitialUsdc,
             entryRemainingMinSec,
             entryRemainingMaxSec,
             entryCheapMinCents: cheapMinCents,
@@ -106,13 +133,15 @@ function Crypto15mHedge() {
             panicHedgeStartSec,
             panicMaxLossCents,
         };
-    }, [pollMs, minProb, amountUsd, entryEndSec, entryStartSec, cheapMinCents, cheapMaxCents, targetProfitCents, profitDecayEnabled, profitDecayMode, profitDecayPerMinCents, profitStartCents, profitEndCents, profitDecayStartSec, profitDecayEndSec, profitStepCents, mode, bufferCents, maxSpreadCents, minDepthPct, minSecToHedge, hedgeIgnoreSpread, panicHedgeEnabled, panicHedgeStartSec, panicMaxLossCents]);
+    }, [pollMs, minProb, amountUsd, simEnabled, simInitialUsdc, entryEndSec, entryStartSec, cheapMinCents, cheapMaxCents, targetProfitCents, profitDecayEnabled, profitDecayMode, profitDecayPerMinCents, profitStartCents, profitEndCents, profitDecayStartSec, profitDecayEndSec, profitStepCents, mode, bufferCents, maxSpreadCents, minDepthPct, minSecToHedge, hedgeIgnoreSpread, panicHedgeEnabled, panicHedgeStartSec, panicMaxLossCents]);
 
     const hydrateFromConfig = (cfg: any) => {
         if (!cfg) return;
         if (cfg.pollMs != null) setPollMs(Number(cfg.pollMs));
         if (cfg.minProb != null) setMinProb(Number(cfg.minProb));
         if (cfg.amountUsd != null) setAmountUsd(Number(cfg.amountUsd));
+        if (cfg.simEnabled != null) setSimEnabled(!!cfg.simEnabled);
+        if (cfg.simInitialUsdc != null) setSimInitialUsdc(Number(cfg.simInitialUsdc));
         if (cfg.entryCheapMinCents != null) setCheapMinCents(Number(cfg.entryCheapMinCents));
         if (cfg.entryCheapMaxCents != null) setCheapMaxCents(Number(cfg.entryCheapMaxCents));
         if (cfg.targetProfitCents != null) setTargetProfitCents(Number(cfg.targetProfitCents));
@@ -141,7 +170,7 @@ function Crypto15mHedge() {
         const r = await apiGet('signals', '/group-arb/crypto15m-hedge/signals');
         const s = r?.data?.status ?? null;
         setStatus(s);
-        hydrateFromConfig(s?.config ?? null);
+        if (!editingRef.current) hydrateFromConfig(s?.config ?? null);
         const es = r?.data?.entrySignals ?? [];
         const hs = r?.data?.hedgeSignals ?? [];
         const opp = r?.data?.opportunities ?? [];
@@ -228,6 +257,7 @@ function Crypto15mHedge() {
         if (timerRef.current) clearInterval(timerRef.current);
         if (!autoRefresh) return;
         timerRef.current = setInterval(() => {
+            if (editingRef.current) return;
             refreshAll({ silent: true }).catch(() => {});
         }, Math.max(500, Math.floor(Number(pollMs) || 2000)));
         return () => {
@@ -315,6 +345,7 @@ function Crypto15mHedge() {
                 {!status?.hasValidKey ? <Alert type="warning" showIcon message="未檢測到私鑰/Trading 未初始化，Auto 會停止" /> : null}
 
                 <Card size="small" style={{ background: '#1f1f1f', borderColor: '#333' }}>
+                    <div onFocusCapture={beginEditing} onBlurCapture={endEditingSoon} onKeyDownCapture={bumpEditing} onMouseDownCapture={bumpEditing}>
                     <Space wrap>
                         <Tag color={enabled ? 'green' : 'red'}>{enabled ? 'AUTO ON' : 'AUTO OFF'}</Tag>
                         <Tag color="blue">entry={entryStartSec}s→{entryEndSec}s</Tag>
@@ -326,6 +357,13 @@ function Crypto15mHedge() {
                             }
                         </Tag>
                         <Tag color="cyan">mode={mode}</Tag>
+                        {status?.sim?.enabled ? (
+                            <>
+                                <Tag color="geekblue">cap=${Number(status.sim.initialUsdc).toFixed(2)}</Tag>
+                                <Tag color="geekblue">eq=${Number(status.sim.equityUsdc).toFixed(2)}</Tag>
+                                <Tag color={Number(status.sim.pnlUsdc) >= 0 ? 'green' : 'red'}>p/l=${Number(status.sim.pnlUsdc).toFixed(2)}</Tag>
+                            </>
+                        ) : null}
                     </Space>
                     <div style={{ marginTop: 12 }}>
                         <Space wrap>
@@ -355,6 +393,13 @@ function Crypto15mHedge() {
                         <Space wrap>
                             <span style={{ color: '#aaa' }}>Amount($)</span>
                             <InputNumber min={1} value={amountUsd} onChange={(v) => setAmountUsd(Number(v))} />
+                            <Checkbox checked={simEnabled} onChange={(e) => setSimEnabled(e.target.checked)}>Simulate</Checkbox>
+                            {simEnabled ? (
+                                <>
+                                    <span style={{ color: '#aaa' }}>Capital($)</span>
+                                    <InputNumber min={1} max={1000000} value={simInitialUsdc} onChange={(v) => setSimInitialUsdc(Number(v))} />
+                                </>
+                            ) : null}
                             <span style={{ color: '#aaa' }}>EntryStart(s)</span>
                             <InputNumber min={0} max={900} value={entryStartSec} onChange={(v) => setEntryStartSec(Number(v))} />
                             <span style={{ color: '#aaa' }}>EntryEnd(s)</span>
@@ -460,6 +505,7 @@ function Crypto15mHedge() {
                             <InputNumber min={0} max={100} value={minDepthPct ?? undefined} onChange={(v) => setMinDepthPct(v == null ? null : Number(v))} />
                         </Space>
                     </div>
+                    </div>
                 </Card>
 
                 <Card size="small" title={<span style={{ color: '#fff' }}>Opportunities (1st + 2nd)</span>} style={{ background: '#1f1f1f', borderColor: '#333' }}>
@@ -477,6 +523,16 @@ function Crypto15mHedge() {
                             { title: '2ndOK', dataIndex: 'secondEligibleNow', key: 'secondEligibleNow', width: 90, render: (v) => v ? <Tag color="green">YES</Tag> : <Tag>NO</Tag> },
                             { title: 'EffP', dataIndex: 'effectiveProfitCents', key: 'effectiveProfitCents', width: 90, render: (v) => v != null ? `${Number(v).toFixed(1)}c` : '-' },
                             { title: 'p2Max', dataIndex: 'p2Max', key: 'p2Max', width: 110, render: (v) => v != null ? `${(Number(v) * 100).toFixed(1)}c` : '-' },
+                            { title: 'State', key: 'state', width: 110, render: (_: any, r: any) => {
+                                const s = String(r.state || 'mixed');
+                                const color = s === 'trend_up' ? 'green' : s === 'trend_down' ? 'red' : s === 'range' ? 'gold' : 'blue';
+                                return <Tag color={color}>{s}</Tag>;
+                            } },
+                            { title: 'RiskUp', dataIndex: 'riskUp', key: 'riskUp', width: 90, render: (v) => v != null ? Number(v).toFixed(0) : '-' },
+                            { title: 'RiskDown', dataIndex: 'riskDown', key: 'riskDown', width: 100, render: (v) => v != null ? Number(v).toFixed(0) : '-' },
+                            { title: 'Body', dataIndex: 'bodyRatio', key: 'bodyRatio', width: 90, render: (v) => v != null ? (Number(v) * 100).toFixed(0) + '%' : '-' },
+                            { title: 'Wick', dataIndex: 'wickRatio', key: 'wickRatio', width: 90, render: (v) => v != null ? (Number(v) * 100).toFixed(0) + '%' : '-' },
+                            { title: 'Mom3m', dataIndex: 'momentum3m', key: 'momentum3m', width: 100, render: (v) => v != null ? (Number(v) * 100).toFixed(2) + '%' : '-' },
                             { title: 'EstShr', dataIndex: 'estEntryShares', key: 'estEntryShares', width: 90, render: (v) => v != null ? Number(v).toFixed(2) : '-' },
                             { title: 'Tradable', dataIndex: 'tradableShares', key: 'tradableShares', width: 90, render: (v) => v != null ? Number(v).toFixed(2) : '-' },
                             { title: 'Reason', key: 'reason', render: (_: any, r: any) => String(r.secondReason || r.entryReason || '-') },
