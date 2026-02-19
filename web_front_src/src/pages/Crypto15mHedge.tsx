@@ -5,6 +5,7 @@ import axios from 'axios';
 import { useAccountApiPath } from '../api/apiPath';
 
 const { Title } = Typography;
+type Range = '1D' | '1W' | '1M' | 'ALL';
 
 const api = axios.create({
     baseURL: '/api',
@@ -45,6 +46,10 @@ function Crypto15mHedge() {
     const [refreshLoading, setRefreshLoading] = useState(false);
     const [startLoading, setStartLoading] = useState(false);
     const [stopLoading, setStopLoading] = useState(false);
+    const [range, setRange] = useState<Range>('1D');
+    const [pnl, setPnl] = useState<any>(null);
+    const [simPnl, setSimPnl] = useState<any>(null);
+    const [pnlLoading, setPnlLoading] = useState(false);
     const [editing, setEditing] = useState(false);
     const editingRef = useRef(false);
     const editingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -185,11 +190,27 @@ function Crypto15mHedge() {
         setHistory(Array.isArray(h) ? h : []);
     };
 
+    const fetchPnl = async (r: Range) => {
+        setPnlLoading(true);
+        try {
+            const [a, b] = await Promise.allSettled([
+                apiGet('pnl', '/group-arb/pnl', { params: { range: r } }),
+                apiGet('sim_pnl', '/group-arb/crypto15m-hedge/pnl', { params: { range: r } }),
+            ]);
+            if (a.status === 'fulfilled') setPnl(a.value?.data ?? null);
+            if (a.status === 'rejected') setPnl(null);
+            if (b.status === 'fulfilled') setSimPnl(b.value?.data ?? null);
+            if (b.status === 'rejected') setSimPnl(null);
+        } finally {
+            setPnlLoading(false);
+        }
+    };
+
     const refreshAll = async (options?: { silent?: boolean }) => {
         const silent = options?.silent === true;
         if (!silent) setRefreshLoading(true);
         try {
-            await Promise.all([fetchSignals(), fetchHistory()]);
+            await Promise.all([fetchSignals(), fetchHistory(), fetchPnl(range)]);
         } finally {
             if (!silent) setRefreshLoading(false);
         }
@@ -265,6 +286,10 @@ function Crypto15mHedge() {
         };
     }, [apiPath, autoRefresh, pollMs]);
 
+    useEffect(() => {
+        fetchPnl(range).catch(() => {});
+    }, [apiPath, range]);
+
     const windowMidSec = useMemo(() => {
         const minSec = Math.max(0, Math.min(900, Math.floor(Number(entryEndSec))));
         const maxSec = Math.max(minSec, Math.min(900, Math.floor(Number(entryStartSec))));
@@ -335,6 +360,72 @@ function Crypto15mHedge() {
         if (historyFilter === 'orders') return list.filter((x) => String(x?.action || '').startsWith('crypto15m_hedge_') && String(x?.action || '') !== 'crypto15m_hedge_attempt');
         return list;
     }, [history, historyFilter]);
+
+    const ordersView = useMemo(() => {
+        const list = Array.isArray(history) ? history : [];
+        return list.filter((x) => {
+            const a = String(x?.action || '');
+            if (!a.startsWith('crypto15m_hedge_')) return false;
+            if (a === 'crypto15m_hedge_attempt') return false;
+            if (a === 'crypto15m_hedge_config_update') return false;
+            if (a === 'crypto15m_hedge_auto_start' || a === 'crypto15m_hedge_auto_stop') return false;
+            return true;
+        });
+    }, [history]);
+
+    const reasonsAgg = useMemo(() => {
+        const list = Array.isArray(history) ? history : [];
+        const map = new Map<string, { reason: string; count: number; lastAt: string | null; sample: any | null }>();
+        for (const e of list) {
+            const action = String(e?.action || '');
+            if (!(action === 'crypto15m_hedge_attempt' || action === 'crypto15m_hedge_skip')) continue;
+            const reason = String(e?.reason || 'unknown');
+            const prev = map.get(reason) || { reason, count: 0, lastAt: null as any, sample: null as any };
+            prev.count += 1;
+            const ts = e?.timestamp != null ? String(e.timestamp) : null;
+            if (ts && (!prev.lastAt || ts > prev.lastAt)) {
+                prev.lastAt = ts;
+                prev.sample = e;
+            }
+            map.set(reason, prev);
+        }
+        return Array.from(map.values()).sort((a, b) => (b.count - a.count));
+    }, [history]);
+
+    const ordersSummary = useMemo(() => {
+        const list = ordersView;
+        const total = list.length;
+        const ok = list.filter((x) => x?.success === true).length;
+        const fail = list.filter((x) => x?.success === false).length;
+        const byAction = list.reduce((acc: any, x: any) => {
+            const a = String(x?.action || 'unknown');
+            if (!acc[a]) acc[a] = { action: a, total: 0, ok: 0, fail: 0 };
+            acc[a].total += 1;
+            if (x?.success === true) acc[a].ok += 1;
+            if (x?.success === false) acc[a].fail += 1;
+            return acc;
+        }, {});
+        const rows = Object.values(byAction).sort((a: any, b: any) => (b.total - a.total));
+        return { total, ok, fail, rows };
+    }, [ordersView]);
+
+    const pnlSummary = useMemo(() => {
+        const portfolioPl = pnl?.profitLoss != null ? Number(pnl.profitLoss) : null;
+        const portfolioSeries = Array.isArray(pnl?.series) ? pnl.series : [];
+        const portfolioEquity = portfolioSeries.length ? Number(portfolioSeries[portfolioSeries.length - 1]?.equity) : null;
+        const simPl = simPnl?.profitLoss != null ? Number(simPnl.profitLoss) : null;
+        const simSeries = Array.isArray(simPnl?.series) ? simPnl.series : [];
+        const simEquity = simSeries.length ? Number(simSeries[simSeries.length - 1]?.equity) : null;
+        const fromSec = pnl?.fromSec != null ? Number(pnl.fromSec) : (simPnl?.fromSec != null ? Number(simPnl.fromSec) : null);
+        const tradesInRange = fromSec != null
+            ? ordersView.filter((x: any) => {
+                const ts = x?.timestamp ? Date.parse(String(x.timestamp)) : NaN;
+                if (!Number.isFinite(ts)) return false;
+                return Math.floor(ts / 1000) >= fromSec;
+            }).length
+            : ordersView.length;
+        return { portfolioPl, portfolioEquity, simPl, simEquity, tradesInRange };
+    }, [pnl, simPnl, ordersView]);
 
     return (
         <div>
@@ -508,6 +599,40 @@ function Crypto15mHedge() {
                     </div>
                 </Card>
 
+                <Card
+                    size="small"
+                    title={<span style={{ color: '#fff' }}>P/L (Day / Week / Month / All)</span>}
+                    style={{ background: '#1f1f1f', borderColor: '#333' }}
+                    extra={
+                        <Space>
+                            <Select
+                                value={range}
+                                onChange={(v) => setRange(v)}
+                                style={{ width: 120 }}
+                                options={[
+                                    { value: '1D', label: '1D' },
+                                    { value: '1W', label: '1W' },
+                                    { value: '1M', label: '1M' },
+                                    { value: 'ALL', label: 'ALL' },
+                                ]}
+                            />
+                            <Button icon={<ReloadOutlined />} onClick={() => fetchPnl(range)} loading={pnlLoading}>Refresh</Button>
+                        </Space>
+                    }
+                >
+                    <Space wrap>
+                        <Tag color="geekblue">trades={pnlSummary.tradesInRange}</Tag>
+                        <Tag color={pnlSummary.portfolioPl != null && pnlSummary.portfolioPl >= 0 ? 'green' : 'red'}>
+                            portfolio p/l={pnlSummary.portfolioPl != null ? Number(pnlSummary.portfolioPl).toFixed(2) : '-'}
+                        </Tag>
+                        <Tag color="geekblue">portfolio eq={pnlSummary.portfolioEquity != null && Number.isFinite(pnlSummary.portfolioEquity) ? Number(pnlSummary.portfolioEquity).toFixed(2) : '-'}</Tag>
+                        <Tag color={pnlSummary.simPl != null && pnlSummary.simPl >= 0 ? 'green' : 'red'}>
+                            sim p/l={pnlSummary.simPl != null ? Number(pnlSummary.simPl).toFixed(2) : '-'}
+                        </Tag>
+                        <Tag color="geekblue">sim eq={pnlSummary.simEquity != null && Number.isFinite(pnlSummary.simEquity) ? Number(pnlSummary.simEquity).toFixed(2) : '-'}</Tag>
+                    </Space>
+                </Card>
+
                 <Card size="small" title={<span style={{ color: '#fff' }}>Opportunities (1st + 2nd)</span>} style={{ background: '#1f1f1f', borderColor: '#333' }}>
                     <Table
                         rowKey={(r) => String(r.conditionId || `${r.symbol}-${r.secondsToExpire}`)}
@@ -594,6 +719,58 @@ function Crypto15mHedge() {
                             { title: 'End', dataIndex: 'endDate', key: 'endDate', render: (v) => String(v || '-') },
                         ]}
                     />
+                </Card>
+
+                <Card size="small" title={<span style={{ color: '#fff' }}>Assessment (Trades / Reasons)</span>} style={{ background: '#1f1f1f', borderColor: '#333' }}>
+                    <Space wrap>
+                        <Tag color="geekblue">orders={ordersSummary.total}</Tag>
+                        <Tag color="green">ok={ordersSummary.ok}</Tag>
+                        <Tag color="red">fail={ordersSummary.fail}</Tag>
+                        <Tag color="gold">attempt/skip={reasonsAgg.reduce((a, b) => a + b.count, 0)}</Tag>
+                    </Space>
+                    <div style={{ marginTop: 12 }}>
+                        <Table
+                            rowKey={(r) => String(r.reason)}
+                            size="small"
+                            pagination={false}
+                            dataSource={reasonsAgg.slice(0, 12)}
+                            columns={[
+                                { title: 'Reason', dataIndex: 'reason', key: 'reason', width: 220, render: (v) => <Tag>{String(v || '-')}</Tag> },
+                                { title: 'Count', dataIndex: 'count', key: 'count', width: 90 },
+                                { title: 'Last', dataIndex: 'lastAt', key: 'lastAt', width: 190, render: (v) => v ? String(v) : '-' },
+                                {
+                                    title: 'Sample',
+                                    key: 'sample',
+                                    render: (_: any, r: any) => {
+                                        const s = r?.sample || null;
+                                        if (!s) return '-';
+                                        const parts: string[] = [];
+                                        if (s.remainingSec != null) parts.push(`rem=${s.remainingSec}`);
+                                        if (s.bestAsk != null) parts.push(`ask=${(Number(s.bestAsk) * 100).toFixed(1)}c`);
+                                        if (s.p2Max != null) parts.push(`p2Max=${(Number(s.p2Max) * 100).toFixed(1)}c`);
+                                        if (s.spreadCents != null) parts.push(`spr=${Number(s.spreadCents).toFixed(1)}c`);
+                                        if (s.tradableShares != null) parts.push(`liq=${Number(s.tradableShares).toFixed(2)}`);
+                                        if (s.errorMsg) parts.push(`err=${String(s.errorMsg).slice(0, 24)}`);
+                                        return parts.length ? parts.join(' ') : '-';
+                                    }
+                                },
+                            ]}
+                        />
+                    </div>
+                    <div style={{ marginTop: 12 }}>
+                        <Table
+                            rowKey={(r: any) => String(r.action)}
+                            size="small"
+                            pagination={false}
+                            dataSource={ordersSummary.rows}
+                            columns={[
+                                { title: 'Action', dataIndex: 'action', key: 'action', width: 220, render: (v) => <Tag color="blue">{String(v)}</Tag> },
+                                { title: 'Total', dataIndex: 'total', key: 'total', width: 90 },
+                                { title: 'OK', dataIndex: 'ok', key: 'ok', width: 90, render: (v) => <span style={{ color: '#52c41a' }}>{Number(v)}</span> },
+                                { title: 'FAIL', dataIndex: 'fail', key: 'fail', width: 90, render: (v) => <span style={{ color: '#ff4d4f' }}>{Number(v)}</span> },
+                            ]}
+                        />
+                    </div>
                 </Card>
 
                 <Card

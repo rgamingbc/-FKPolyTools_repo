@@ -21,13 +21,6 @@ These are local files created by the backend at runtime:
 - Auto-redeem config: /var/lib/polymarket-tools/auto-redeem.json
 - History file: /var/lib/polymarket-tools/history.json and history.json.bak
 - PnL snapshots: /var/lib/polymarket-tools/pnl-snapshots.json
-- Strategy configs / thresholds (examples):
-  - /var/lib/polymarket-tools/crypto15m-config.json
-  - /var/lib/polymarket-tools/crypto15m-delta-thresholds.json
-  - /var/lib/polymarket-tools/crypto15m2-config.json
-  - /var/lib/polymarket-tools/crypto15m2-delta-thresholds.json
-  - /var/lib/polymarket-tools/crypto_all_v2.json
-  - /var/lib/polymarket-tools/crypto_all_2.json
 
 Recommendation: keep runtime files in a persistent directory so your config survives restarts.
 
@@ -106,13 +99,11 @@ Copy /var/lib/polymarket-tools from your backup tar.gz.
 
 3) Verify UI pages
    - `/crypto-15m`
-   - `/crypto-15m-2`
    - `/advanced` (history view)
 
 ## Smoke Test Checklist
 
 - Relayer status shows `relayerConfigured=true` and keys loaded
 - `GET /api/group-arb/crypto15m/candidates` returns BTC/ETH/SOL rows
-- `GET /api/group-arb/crypto15m2/candidates?timeframes=5m,15m` returns BTC/ETH/SOL rows
 - `POST /api/group-arb/crypto15m/order` rejects when price < 0.90 (unless forced)
 - `POST /api/group-arb/redeem/conditions` does not hang when redeemable=false (skips)

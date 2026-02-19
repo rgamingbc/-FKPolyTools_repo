@@ -60,19 +60,14 @@ function Sidebar() {
             label: '⏱️ 15M Crypto',
         },
         {
-            key: '/crypto-15m-all',
+            key: '/crypto-15m-2',
             icon: <SwapOutlined />,
-            label: '⏱️ 15M ALL',
+            label: '⏱️ 15M Crypto 2',
         },
         {
             key: '/crypto-15m-hedge',
             icon: <SwapOutlined />,
             label: '🪤 Crypto15M Hedge',
-        },
-        {
-            key: '/crypto-all',
-            icon: <SwapOutlined />,
-            label: '🧩 Crypto All',
         },
         {
             key: '/crypto-all2',

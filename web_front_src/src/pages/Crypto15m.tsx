@@ -1,4 +1,4 @@
-import { memo, startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, Card, Checkbox, Collapse, InputNumber, Modal, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { PlayCircleOutlined, PauseCircleOutlined, ReloadOutlined, ShoppingCartOutlined, SafetyCertificateOutlined, DeleteOutlined } from '@ant-design/icons';
 import axios from 'axios';
@@ -13,46 +13,7 @@ const api = axios.create({
     timeout: 120000,
 });
 
-let crypto15mNowSec = Math.floor(Date.now() / 1000);
-const crypto15mNowListeners = new Set<() => void>();
-const crypto15mNowKey = '__fktools_crypto15m_now_timer__';
-const ensureCrypto15mNowTimer = () => {
-    const existing: any = (globalThis as any)[crypto15mNowKey];
-    const lastTickAtMs = existing && typeof existing === 'object' ? Number(existing.lastTickAtMs || 0) : 0;
-    const id = existing && typeof existing === 'object' ? existing.id : existing;
-    const stale = lastTickAtMs > 0 ? (Date.now() - lastTickAtMs) > 2500 : false;
-    if (stale && id) {
-        try { clearInterval(id); } catch {}
-        (globalThis as any)[crypto15mNowKey] = null;
-    }
-    const cur: any = (globalThis as any)[crypto15mNowKey];
-    if (cur) return;
-    const state: any = { id: null as any, lastTickAtMs: Date.now() };
-    state.id = setInterval(() => {
-        crypto15mNowSec = Math.floor(Date.now() / 1000);
-        state.lastTickAtMs = Date.now();
-        for (const fn of Array.from(crypto15mNowListeners)) {
-            try { fn(); } catch {}
-        }
-    }, 1000);
-    (globalThis as any)[crypto15mNowKey] = state;
-};
-ensureCrypto15mNowTimer();
-
-const useNowSec = () => {
-    const [v, setV] = useState<number>(() => crypto15mNowSec);
-    useEffect(() => {
-        ensureCrypto15mNowTimer();
-        const fn = () => setV(crypto15mNowSec);
-        crypto15mNowListeners.add(fn);
-        return () => {
-            crypto15mNowListeners.delete(fn);
-        };
-    }, []);
-    return v;
-};
-
-function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; settingsKey?: string } = {}) {
+function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; settingsKey?: string; apiNamespace?: 'crypto15m' | 'crypto15m2' } = {}) {
     const safeMode = useMemo(() => {
         try {
             return new URLSearchParams(window.location.search).get('safe') === '1';
@@ -61,10 +22,14 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         }
     }, []);
     const variant: 'crypto15m' | 'all' = props.variant === 'all' ? 'all' : 'crypto15m';
+    const apiNamespace: 'crypto15m' | 'crypto15m2' = props.apiNamespace === 'crypto15m2' ? 'crypto15m2' : 'crypto15m';
+    const apiStrategy = variant === 'all' ? 'cryptoall' : apiNamespace;
+    const apiBase = `/group-arb/${apiStrategy}`;
     const settingsKey = String(props.settingsKey || 'crypto15m_settings_v1');
     const pageTitle = String(props.title || '⏱️ 15mins Crypto Trade');
     const apiPath = useAccountApiPath();
     const accountScopeKey = useMemo(() => apiPath('/'), [apiPath]);
+    const settingsStorageKey = useMemo(() => `${settingsKey}:${accountScopeKey}`, [settingsKey, accountScopeKey]);
     const abortersRef = useRef<Map<string, AbortController>>(new Map());
     const apiGet = useCallback((key: string, p: string, config?: any) => {
         const prev = abortersRef.current.get(key);
@@ -77,6 +42,11 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         });
     }, [apiPath]);
     const apiPost = useCallback((key: string, p: string, data?: any, config?: any) => {
+        const pp = String(p || '');
+        const nonAbortable = /\/group-arb\/crypto(15m2|15m|all)\/(auto|watchdog)\/(start|stop)$/.test(pp);
+        if (nonAbortable) {
+            return api.post(apiPath(p), data, { ...(config || {}) });
+        }
         const prev = abortersRef.current.get(key);
         if (prev) prev.abort();
         const controller = new AbortController();
@@ -137,15 +107,49 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         '4h': 180,
         '1d': 180,
     }));
+    const [expiresDirty, setExpiresDirty] = useState(false);
+    const [expiresBulkDraft, setExpiresBulkDraft] = useState<string>('');
+    const [expiresByTfDraft, setExpiresByTfDraft] = useState<Record<'5m' | '15m' | '1h' | '4h' | '1d', string>>(() => ({
+        '5m': '180',
+        '15m': '180',
+        '1h': '180',
+        '4h': '180',
+        '1d': '180',
+    }));
     const [amountUsd, setAmountUsd] = useState<number>(1);
     const [buySizingMode, setBuySizingMode] = useState<'fixed' | 'orderbook_max' | 'all_capital'>('fixed');
     const [sweepEnabled, setSweepEnabled] = useState<boolean>(true);
     const [sweepWindowSec, setSweepWindowSec] = useState<number>(30);
+    const [sweepWindowSecByTimeframe, setSweepWindowSecByTimeframe] = useState<Record<'5m' | '15m' | '1h' | '4h' | '1d', number>>(() => ({
+        '5m': 30,
+        '15m': 30,
+        '1h': 30,
+        '4h': 30,
+        '1d': 30,
+    }));
+    const [sweepDirty, setSweepDirty] = useState(false);
+    const [sweepBulkDraft, setSweepBulkDraft] = useState<string>('');
+    const [sweepByTfDraft, setSweepByTfDraft] = useState<Record<'5m' | '15m' | '1h' | '4h' | '1d', string>>(() => ({
+        '5m': '30',
+        '15m': '30',
+        '1h': '30',
+        '4h': '30',
+        '1d': '30',
+    }));
     const [sweepMaxOrdersPerMarket, setSweepMaxOrdersPerMarket] = useState<number>(10);
     const [sweepMaxTotalUsdPerMarket, setSweepMaxTotalUsdPerMarket] = useState<number>(600);
     const [sweepMinIntervalMs, setSweepMinIntervalMs] = useState<number>(400);
     const [trendEnabled, setTrendEnabled] = useState<boolean>(true);
     const [trendMinutes, setTrendMinutes] = useState<number>(1);
+    const [allDojiGuardEnabled, setAllDojiGuardEnabled] = useState<boolean>(true);
+    const [allRiskSkipScore, setAllRiskSkipScore] = useState<number>(70);
+    const [allRiskAddOnBlockScore, setAllRiskAddOnBlockScore] = useState<number>(50);
+    const [allAddOnTrendEnabled, setAllAddOnTrendEnabled] = useState<boolean>(true);
+    const [allAddOnTrendMinutesA, setAllAddOnTrendMinutesA] = useState<number>(3);
+    const [allAddOnTrendMinutesB, setAllAddOnTrendMinutesB] = useState<number>(2);
+    const [allAddOnTrendMinutesC, setAllAddOnTrendMinutesC] = useState<number>(1);
+    const [allRiskPopupOpen, setAllRiskPopupOpen] = useState(false);
+    const [m2Timeframes, setM2Timeframes] = useState<Array<'5m' | '15m'>>(['15m', '5m']);
     const [staleMsThreshold, setStaleMsThreshold] = useState<number>(5000);
     const [btcMinDelta, setBtcMinDelta] = useState<number>(600);
     const [ethMinDelta, setEthMinDelta] = useState<number>(30);
@@ -187,6 +191,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const [resetLoading, setResetLoading] = useState(false);
     const [, setThresholdsLoading] = useState(false);
     const [thresholdsSaving, setThresholdsSaving] = useState(false);
+    const [allRiskSaving, setAllRiskSaving] = useState(false);
     const [settingsHydrated, setSettingsHydrated] = useState(false);
     const [watchdogStartLoading, setWatchdogStartLoading] = useState(false);
     const [watchdogStopLoading, setWatchdogStopLoading] = useState(false);
@@ -202,6 +207,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const [deltaBoxQuickTf, setDeltaBoxQuickTf] = useState<'5m' | '15m' | '1h' | '4h' | '1d'>('15m');
     const [deltaBoxViewMode, setDeltaBoxViewMode] = useState<'single' | 'grid'>('grid');
     const [expiryBulkOpen, setExpiryBulkOpen] = useState(false);
+    const [sweepBulkOpen, setSweepBulkOpen] = useState(false);
     const [deltaBoxApplyBySymbol, setDeltaBoxApplyBySymbol] = useState<Record<string, { enabled: boolean; timeframe: '5m' | '15m' | '1h' | '4h' | '1d'; mode: 'A' | 'C' | 'Manual'; n: 10 | 20 | 50; cIndex: 1 | 2 | 3; pct: number; manualValue: number }>>(() => ({
         BTC: { enabled: false, timeframe: '15m', mode: 'A', n: 20, cIndex: 1, pct: 100, manualValue: 0 },
         ETH: { enabled: false, timeframe: '15m', mode: 'A', n: 20, cIndex: 1, pct: 100, manualValue: 0 },
@@ -238,7 +244,6 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const watchdogInFlightRef = useRef<boolean>(false);
     const wsRef = useRef<WebSocket | null>(null);
     const wsSessionRef = useRef(0);
-    const cryptoAllStickyCandidatesRef = useRef<Map<string, any>>(new Map());
     const candidatesSigRef = useRef<string>('');
     const candidatesMetaSigRef = useRef<string>('');
     const historySigRef = useRef<string>('');
@@ -292,6 +297,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const wsReconnectTimerRef = useRef<any>(null);
 
     const toCents = (p: any) => {
+        if (p == null) return '-';
         const n = Number(p);
         if (!Number.isFinite(n)) return '-';
         return (n * 100).toFixed(1) + 'c';
@@ -318,22 +324,79 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         return parts.join(' • ');
     };
 
-    const CountdownTag = memo(({ endDate, fallbackSeconds }: { endDate?: string; fallbackSeconds?: number }) => {
-        const nowSec = useNowSec();
-        const ms = endDate ? Date.parse(String(endDate)) : NaN;
-        const sec = Number.isFinite(ms)
-            ? Math.max(0, Math.floor(ms / 1000) - nowSec)
-            : (() => {
-                const fb = fallbackSeconds != null ? Number(fallbackSeconds) : NaN;
-                return Number.isFinite(fb) ? Math.max(0, Math.floor(fb)) : 0;
-            })();
-        return <Tag color={sec <= 30 ? 'red' : 'gold'} style={{ display: 'inline-block', minWidth: 44, textAlign: 'center' }}>{String(sec)}</Tag>;
-    });
-
     useEffect(() => {
+        setSettingsHydrated(false);
+        setPollMs(safeMode ? 5000 : 1000);
+        setMinProb(0.9);
+        setExpiresWithinSec(180);
+        setExpiresWithinSecByTimeframe({ '5m': 180, '15m': 180, '1h': 180, '4h': 180, '1d': 180 });
+        setExpiresDirty(false);
+        setExpiresBulkDraft('');
+        setExpiresByTfDraft({ '5m': '180', '15m': '180', '1h': '180', '4h': '180', '1d': '180' });
+        setAmountUsd(1);
+        setBuySizingMode('fixed');
+        setSweepEnabled(true);
+        setSweepWindowSec(30);
+        setSweepWindowSecByTimeframe({ '5m': 30, '15m': 30, '1h': 30, '4h': 30, '1d': 30 });
+        setSweepDirty(false);
+        setSweepBulkDraft('');
+        setSweepByTfDraft({ '5m': '30', '15m': '30', '1h': '30', '4h': '30', '1d': '30' });
+        setSweepMaxOrdersPerMarket(10);
+        setSweepMaxTotalUsdPerMarket(600);
+        setSweepMinIntervalMs(400);
+        setTrendEnabled(true);
+        setTrendMinutes(1);
+        setAllDojiGuardEnabled(true);
+        setAllRiskSkipScore(70);
+        setAllRiskAddOnBlockScore(50);
+        setAllAddOnTrendEnabled(true);
+        setAllAddOnTrendMinutesA(3);
+        setAllAddOnTrendMinutesB(2);
+        setAllAddOnTrendMinutesC(1);
+        setM2Timeframes(['15m', '5m']);
+        setStaleMsThreshold(5000);
+        setBtcMinDelta(600);
+        setEthMinDelta(30);
+        setSolMinDelta(0.8);
+        setXrpMinDelta(0.0065);
+        setCryptoAllDeltaByTimeframe({
+            '5m': { btcMinDelta: 600, ethMinDelta: 30, solMinDelta: 0.8, xrpMinDelta: 0.0065 },
+            '15m': { btcMinDelta: 600, ethMinDelta: 30, solMinDelta: 0.8, xrpMinDelta: 0.0065 },
+            '1h': { btcMinDelta: 600, ethMinDelta: 30, solMinDelta: 0.8, xrpMinDelta: 0.0065 },
+            '4h': { btcMinDelta: 600, ethMinDelta: 30, solMinDelta: 0.8, xrpMinDelta: 0.0065 },
+            '1d': { btcMinDelta: 600, ethMinDelta: 30, solMinDelta: 0.8, xrpMinDelta: 0.0065 },
+        });
+        setStoplossEnabled(false);
+        setStoplossCut1DropCents(1);
+        setStoplossCut1SellPct(50);
+        setStoplossCut2DropCents(2);
+        setStoplossCut2SellPct(100);
+        setStoplossMinSecToExit(25);
+        setAdaptiveDeltaEnabled(true);
+        setAdaptiveDeltaBigMoveMultiplier(2);
+        setAdaptiveDeltaRevertNoBuyCount(4);
+        setAllSymbols([]);
+        setAllTimeframes([]);
+        setDeltaBoxQuickTf('15m');
+        setDeltaBoxViewMode('grid');
+        setDeltaBoxApplyBySymbol({
+            BTC: { enabled: false, timeframe: '15m', mode: 'A', n: 20, cIndex: 1, pct: 100, manualValue: 0 },
+            ETH: { enabled: false, timeframe: '15m', mode: 'A', n: 20, cIndex: 1, pct: 100, manualValue: 0 },
+            SOL: { enabled: false, timeframe: '15m', mode: 'A', n: 20, cIndex: 1, pct: 100, manualValue: 0 },
+            XRP: { enabled: false, timeframe: '15m', mode: 'A', n: 20, cIndex: 1, pct: 100, manualValue: 0 },
+        });
+        setDeltaBoxExpireApply({ enabled: false, symbol: 'BTC', timeframe: '15m', n: 20, lastIndex: 1 });
+        setDeltaBoxAutoConfirmEnabled(false);
+        setDeltaBoxAutoConfirmMinIntervalSec(60);
+        setDeltaBoxAutoConfirmMinChangePct(0);
+        setDeltaBoxAutoConfirmLastSavedAt(null);
+        setDeltaBoxAutoConfirmLastError(null);
         try {
-            const raw = localStorage.getItem(settingsKey);
+            const raw = localStorage.getItem(settingsStorageKey) || localStorage.getItem(settingsKey);
             if (!raw) return;
+            if (!localStorage.getItem(settingsStorageKey) && raw && localStorage.getItem(settingsKey)) {
+                try { localStorage.setItem(settingsStorageKey, raw); } catch {}
+            }
             const parsed = JSON.parse(raw);
             if (parsed?.minProb != null) setMinProb(Number(parsed.minProb));
             if (parsed?.expiresWithinSec != null) setExpiresWithinSec(Number(parsed.expiresWithinSec));
@@ -346,6 +409,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                     next[tf] = Math.max(10, Math.floor(Number.isFinite(Number(v)) ? Number(v) : 180));
                 }
                 setExpiresWithinSecByTimeframe(next);
+                setExpiresDirty(true);
             }
             if (parsed?.amountUsd != null) setAmountUsd(Number(parsed.amountUsd));
             if (parsed?.buySizingMode != null) {
@@ -354,11 +418,35 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
             }
             if (parsed?.sweepEnabled != null) setSweepEnabled(!!parsed.sweepEnabled);
             if (parsed?.sweepWindowSec != null) setSweepWindowSec(Number(parsed.sweepWindowSec));
+            if (parsed?.sweepWindowSecByTimeframe && typeof parsed.sweepWindowSecByTimeframe === 'object') {
+                const by = parsed.sweepWindowSecByTimeframe as any;
+                const tfs = ['5m', '15m', '1h', '4h', '1d'] as const;
+                const next: any = {};
+                for (const tf of tfs) {
+                    const v = by[tf];
+                    next[tf] = Math.max(0, Math.min(900, Math.floor(Number.isFinite(Number(v)) ? Number(v) : 30)));
+                }
+                setSweepWindowSecByTimeframe(next);
+                setSweepByTfDraft((p) => ({ ...p, ...tfs.reduce((acc: any, tf) => { acc[tf] = String(next[tf]); return acc; }, {}) }));
+            }
             if (parsed?.sweepMaxOrdersPerMarket != null) setSweepMaxOrdersPerMarket(Number(parsed.sweepMaxOrdersPerMarket));
             if (parsed?.sweepMaxTotalUsdPerMarket != null) setSweepMaxTotalUsdPerMarket(Number(parsed.sweepMaxTotalUsdPerMarket));
             if (parsed?.sweepMinIntervalMs != null) setSweepMinIntervalMs(Number(parsed.sweepMinIntervalMs));
             if (parsed?.trendEnabled != null) setTrendEnabled(!!parsed.trendEnabled);
             if (parsed?.trendMinutes != null) setTrendMinutes(Number(parsed.trendMinutes));
+            if (parsed?.allDojiGuardEnabled != null) setAllDojiGuardEnabled(!!parsed.allDojiGuardEnabled);
+            if (parsed?.allRiskSkipScore != null) setAllRiskSkipScore(Number(parsed.allRiskSkipScore));
+            if (parsed?.allRiskAddOnBlockScore != null) setAllRiskAddOnBlockScore(Number(parsed.allRiskAddOnBlockScore));
+            if (parsed?.allAddOnTrendEnabled != null) setAllAddOnTrendEnabled(!!parsed.allAddOnTrendEnabled);
+            if (parsed?.allAddOnTrendMinutesA != null) setAllAddOnTrendMinutesA(Number(parsed.allAddOnTrendMinutesA));
+            if (parsed?.allAddOnTrendMinutesB != null) setAllAddOnTrendMinutesB(Number(parsed.allAddOnTrendMinutesB));
+            if (parsed?.allAddOnTrendMinutesC != null) setAllAddOnTrendMinutesC(Number(parsed.allAddOnTrendMinutesC));
+            if (parsed?.m2Timeframes != null) {
+                const raw = Array.isArray(parsed.m2Timeframes) ? parsed.m2Timeframes : (typeof parsed.m2Timeframes === 'string' ? String(parsed.m2Timeframes).split(',') : []);
+                const next = Array.from(new Set((raw || []).map((x: any) => String(x || '').toLowerCase()).filter(Boolean)))
+                    .filter((x: any) => x === '5m' || x === '15m') as Array<'5m' | '15m'>;
+                setM2Timeframes(next.length ? next : ['15m', '5m']);
+            }
             if (parsed?.staleMsThreshold != null) setStaleMsThreshold(Number(parsed.staleMsThreshold));
             if (parsed?.pollMs != null) setPollMs(Number(parsed.pollMs));
             if (parsed?.btcMinDelta != null) setBtcMinDelta(Number(parsed.btcMinDelta));
@@ -462,12 +550,12 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         } finally {
             setSettingsHydrated(true);
         }
-    }, []);
+    }, [accountScopeKey, pageTitle, safeMode, settingsKey, settingsStorageKey]);
 
     useEffect(() => {
         if (!settingsHydrated) return;
         try {
-            localStorage.setItem(settingsKey, JSON.stringify({
+            localStorage.setItem(settingsStorageKey, JSON.stringify({
                 minProb,
                 expiresWithinSec,
                 expiresWithinSecByTimeframe,
@@ -475,11 +563,20 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 buySizingMode,
                 sweepEnabled,
                 sweepWindowSec,
+                sweepWindowSecByTimeframe,
                 sweepMaxOrdersPerMarket,
                 sweepMaxTotalUsdPerMarket,
                 sweepMinIntervalMs,
                 trendEnabled,
                 trendMinutes,
+                allDojiGuardEnabled,
+                allRiskSkipScore,
+                allRiskAddOnBlockScore,
+                allAddOnTrendEnabled,
+                allAddOnTrendMinutesA,
+                allAddOnTrendMinutesB,
+                allAddOnTrendMinutesC,
+                m2Timeframes,
                 staleMsThreshold,
                 pollMs,
                 btcMinDelta,
@@ -507,21 +604,23 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
             }));
         } catch {
         }
-    }, [settingsHydrated, minProb, expiresWithinSec, expiresWithinSecByTimeframe, amountUsd, buySizingMode, sweepEnabled, sweepWindowSec, sweepMaxOrdersPerMarket, sweepMaxTotalUsdPerMarket, sweepMinIntervalMs, trendEnabled, trendMinutes, staleMsThreshold, pollMs, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta, cryptoAllDeltaByTimeframe, stoplossEnabled, stoplossCut1DropCents, stoplossCut1SellPct, stoplossCut2DropCents, stoplossCut2SellPct, stoplossMinSecToExit, adaptiveDeltaEnabled, adaptiveDeltaBigMoveMultiplier, adaptiveDeltaRevertNoBuyCount, allSymbols.join(','), allTimeframes.join(','), deltaBoxViewMode, deltaBoxExpireApply, deltaBoxApplyBySymbol, deltaBoxAutoConfirmEnabled, deltaBoxAutoConfirmMinIntervalSec, deltaBoxAutoConfirmMinChangePct]);
+    }, [settingsHydrated, settingsStorageKey, minProb, expiresWithinSec, expiresWithinSecByTimeframe, amountUsd, buySizingMode, sweepEnabled, sweepWindowSec, sweepWindowSecByTimeframe, sweepMaxOrdersPerMarket, sweepMaxTotalUsdPerMarket, sweepMinIntervalMs, trendEnabled, trendMinutes, allDojiGuardEnabled, allRiskSkipScore, allRiskAddOnBlockScore, allAddOnTrendEnabled, allAddOnTrendMinutesA, allAddOnTrendMinutesB, allAddOnTrendMinutesC, m2Timeframes.join(','), staleMsThreshold, pollMs, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta, cryptoAllDeltaByTimeframe, stoplossEnabled, stoplossCut1DropCents, stoplossCut1SellPct, stoplossCut2DropCents, stoplossCut2SellPct, stoplossMinSecToExit, adaptiveDeltaEnabled, adaptiveDeltaBigMoveMultiplier, adaptiveDeltaRevertNoBuyCount, allSymbols.join(','), allTimeframes.join(','), deltaBoxViewMode, deltaBoxExpireApply, deltaBoxApplyBySymbol, deltaBoxAutoConfirmEnabled, deltaBoxAutoConfirmMinIntervalSec, deltaBoxAutoConfirmMinChangePct]);
 
     useEffect(() => {
-        if (variant !== 'all') return;
-        const max = Math.max(...Object.values(expiresWithinSecByTimeframe || { '5m': expiresWithinSec, '15m': expiresWithinSec, '1h': expiresWithinSec, '4h': expiresWithinSec, '1d': expiresWithinSec }));
+        if (!(variant === 'all' || apiNamespace === 'crypto15m2')) return;
+        const base = expiresWithinSec;
+        const by = expiresWithinSecByTimeframe || { '5m': base, '15m': base, '1h': base, '4h': base, '1d': base };
+        const keys = apiNamespace === 'crypto15m2' ? (['5m', '15m'] as const) : (['5m', '15m', '1h', '4h', '1d'] as const);
+        const max = Math.max(...keys.map((k) => Number((by as any)[k] ?? base)));
         if (Number.isFinite(max) && max !== expiresWithinSec) setExpiresWithinSec(max);
-    }, [variant, expiresWithinSecByTimeframe]);
+    }, [variant, apiNamespace, expiresWithinSecByTimeframe]);
 
     const fetchStatus = async () => {
         if (statusInFlightRef.current) return;
         statusInFlightRef.current = true;
         setStatusLastError(null);
         try {
-            const endpoint = variant === 'all' ? '/group-arb/cryptoall/status' : '/group-arb/crypto15m/status';
-            const res = await apiGet('status', endpoint);
+            const res = await apiGet('status', `${apiBase}/status`);
             setStatus(res.data?.status);
         } catch (e: any) {
             const msg = e?.response?.data?.error || e?.message || String(e);
@@ -535,7 +634,76 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     useEffect(() => {
         if (!status?.config) return;
         if (editing) return;
+        if (!(variant === 'all' || apiNamespace === 'crypto15m2')) return;
+        if (expiresDirty) return;
+        const cfg = status.config || {};
+        const by = (cfg.expiresWithinSecByTimeframe && typeof cfg.expiresWithinSecByTimeframe === 'object') ? cfg.expiresWithinSecByTimeframe : null;
+        const base = cfg.expiresWithinSec != null ? Number(cfg.expiresWithinSec) : 180;
+        const tfs = (apiNamespace === 'crypto15m2' ? (['5m', '15m'] as const) : (['5m', '15m', '1h', '4h', '1d'] as const));
+        const next: any = {};
+        for (const tf of tfs) {
+            const v = by && (by as any)[tf] != null ? Number((by as any)[tf]) : base;
+            next[tf] = Math.max(10, Math.min(3600, Math.floor(Number.isFinite(v) ? v : base)));
+        }
+        setExpiresWithinSecByTimeframe(next);
+    }, [variant, apiNamespace, editing, expiresDirty, status?.config?.expiresWithinSec, status?.config?.expiresWithinSecByTimeframe]);
+
+    useEffect(() => {
+        if (!status?.config) return;
+        if (editing) return;
         if (variant !== 'all') return;
+        if (sweepDirty) return;
+        const cfg = status.config || {};
+        const by = (cfg.sweepWindowSecByTimeframe && typeof cfg.sweepWindowSecByTimeframe === 'object') ? cfg.sweepWindowSecByTimeframe : null;
+        const base = cfg.sweepWindowSec != null ? Number(cfg.sweepWindowSec) : 30;
+        const tfs = ['5m', '15m', '1h', '4h', '1d'] as const;
+        const next: any = {};
+        for (const tf of tfs) {
+            const v = by && (by as any)[tf] != null ? Number((by as any)[tf]) : base;
+            next[tf] = Math.max(0, Math.min(900, Math.floor(Number.isFinite(v) ? v : base)));
+        }
+        setSweepWindowSecByTimeframe(next);
+    }, [variant, editing, sweepDirty, status?.config?.sweepWindowSec, status?.config?.sweepWindowSecByTimeframe]);
+
+    const applyExpiresDraftFromState = useCallback(() => {
+        const tfs = ['5m', '15m', '1h', '4h', '1d'] as const;
+        const next: any = {};
+        for (const tf of tfs) next[tf] = String((expiresWithinSecByTimeframe as any)?.[tf] ?? 180);
+        setExpiresByTfDraft(next);
+        const max = Math.max(...Object.values(expiresWithinSecByTimeframe || { '5m': 180, '15m': 180, '1h': 180, '4h': 180, '1d': 180 }));
+        setExpiresBulkDraft(String(Number.isFinite(max) ? Math.floor(max) : 180));
+    }, [expiresWithinSecByTimeframe]);
+
+    const commitExpiresBulk = useCallback(() => {
+        const n = Math.floor(Number(expiresBulkDraft));
+        if (!Number.isFinite(n)) return;
+        const v = Math.max(10, Math.min(3600, n));
+        setExpiresWithinSecByTimeframe((p) => {
+            const next: any = { ...p };
+            for (const tf of ['5m', '15m', '1h', '4h', '1d'] as const) next[tf] = v;
+            return next;
+        });
+        setExpiresDirty(true);
+        setExpiresBulkDraft(String(v));
+        setExpiresByTfDraft((p) => {
+            const next: any = { ...p };
+            for (const tf of ['5m', '15m', '1h', '4h', '1d'] as const) next[tf] = String(v);
+            return next;
+        });
+    }, [expiresBulkDraft]);
+
+    const commitExpiresTf = useCallback((tf: '5m' | '15m' | '1h' | '4h' | '1d') => {
+        const raw = (expiresByTfDraft as any)?.[tf];
+        const n = Math.floor(Number(raw));
+        if (!Number.isFinite(n)) return;
+        const v = Math.max(10, Math.min(3600, n));
+        setExpiresWithinSecByTimeframe((p) => ({ ...p, [tf]: v }));
+        setExpiresDirty(true);
+        setExpiresByTfDraft((p) => ({ ...p, [tf]: String(v) }));
+    }, [expiresByTfDraft]);
+
+    const loadExpiresFromServer = useCallback(() => {
+        if (!status?.config) return;
         const cfg = status.config || {};
         const by = (cfg.expiresWithinSecByTimeframe && typeof cfg.expiresWithinSecByTimeframe === 'object') ? cfg.expiresWithinSecByTimeframe : null;
         const base = cfg.expiresWithinSec != null ? Number(cfg.expiresWithinSec) : 180;
@@ -545,8 +713,63 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
             const v = by && (by as any)[tf] != null ? Number((by as any)[tf]) : base;
             next[tf] = Math.max(10, Math.min(3600, Math.floor(Number.isFinite(v) ? v : base)));
         }
+        setExpiresDirty(false);
         setExpiresWithinSecByTimeframe(next);
-    }, [variant, editing, status?.config?.expiresWithinSec, status?.config?.expiresWithinSecByTimeframe]);
+        setTimeout(() => applyExpiresDraftFromState(), 0);
+    }, [status?.config, applyExpiresDraftFromState]);
+
+    const applySweepDraftFromState = useCallback(() => {
+        const tfs = ['5m', '15m', '1h', '4h', '1d'] as const;
+        const next: any = {};
+        for (const tf of tfs) next[tf] = String((sweepWindowSecByTimeframe as any)?.[tf] ?? 30);
+        setSweepByTfDraft(next);
+        const max = Math.max(...Object.values(sweepWindowSecByTimeframe || { '5m': 30, '15m': 30, '1h': 30, '4h': 30, '1d': 30 }));
+        setSweepBulkDraft(String(Number.isFinite(max) ? Math.floor(max) : 30));
+    }, [sweepWindowSecByTimeframe]);
+
+    const commitSweepBulk = useCallback(() => {
+        const n = Math.floor(Number(sweepBulkDraft));
+        if (!Number.isFinite(n)) return;
+        const v = Math.max(0, Math.min(900, n));
+        setSweepWindowSecByTimeframe((p) => {
+            const next: any = { ...p };
+            for (const tf of ['5m', '15m', '1h', '4h', '1d'] as const) next[tf] = v;
+            return next;
+        });
+        setSweepDirty(true);
+        setSweepBulkDraft(String(v));
+        setSweepByTfDraft((p) => {
+            const next: any = { ...p };
+            for (const tf of ['5m', '15m', '1h', '4h', '1d'] as const) next[tf] = String(v);
+            return next;
+        });
+    }, [sweepBulkDraft]);
+
+    const commitSweepTf = useCallback((tf: '5m' | '15m' | '1h' | '4h' | '1d') => {
+        const raw = (sweepByTfDraft as any)?.[tf];
+        const n = Math.floor(Number(raw));
+        if (!Number.isFinite(n)) return;
+        const v = Math.max(0, Math.min(900, n));
+        setSweepWindowSecByTimeframe((p) => ({ ...p, [tf]: v }));
+        setSweepDirty(true);
+        setSweepByTfDraft((p) => ({ ...p, [tf]: String(v) }));
+    }, [sweepByTfDraft]);
+
+    const loadSweepFromServer = useCallback(() => {
+        if (!status?.config) return;
+        const cfg = status.config || {};
+        const by = (cfg.sweepWindowSecByTimeframe && typeof cfg.sweepWindowSecByTimeframe === 'object') ? cfg.sweepWindowSecByTimeframe : null;
+        const base = cfg.sweepWindowSec != null ? Number(cfg.sweepWindowSec) : 30;
+        const tfs = ['5m', '15m', '1h', '4h', '1d'] as const;
+        const next: any = {};
+        for (const tf of tfs) {
+            const v = by && (by as any)[tf] != null ? Number((by as any)[tf]) : base;
+            next[tf] = Math.max(0, Math.min(900, Math.floor(Number.isFinite(v) ? v : base)));
+        }
+        setSweepDirty(false);
+        setSweepWindowSecByTimeframe(next);
+        setTimeout(() => applySweepDraftFromState(), 0);
+    }, [status?.config, applySweepDraftFromState]);
 
     const sortCandidates = (list: any[]) => {
         return (Array.isArray(list) ? list : [])
@@ -588,90 +811,24 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         setCandidatesLastError(null);
         if (variant === 'all') {
             try {
-                if (!allSymbols.length || !allTimeframes.length) {
-                    candidatesSigRef.current = '';
-                    candidatesMetaSigRef.current = '';
-                    setCandidates([]);
-                    setCandidatesMeta(null);
-                    return;
-                }
-                const rr = await apiGet('candidates_all', '/group-arb/cryptoall/candidates', {
+                const backendSymbols = (allSymbols && allSymbols.length) ? allSymbols : (['BTC', 'ETH', 'SOL', 'XRP'] as any);
+                const backendTimeframes = (allTimeframes && allTimeframes.length) ? allTimeframes : (['5m', '15m', '1h', '4h', '1d'] as any);
+                const rr = await apiGet('candidates_all', '/group-arb/cryptoall/candidates/ui', {
                     params: {
-                        symbols: allSymbols.join(','),
-                        timeframes: allTimeframes.join(','),
+                        symbols: backendSymbols.join(','),
+                        timeframes: backendTimeframes.join(','),
                         minProb,
                         expiresWithinSec,
                         limit: 17,
                     }
                 });
-                const rawList = Array.isArray(rr.data?.candidates) ? rr.data.candidates : [];
-                const mapped = rawList.map((c: any) => {
-                    const sec = c?.secondsToExpire != null ? Number(c.secondsToExpire) : NaN;
-                    const secOk = Number.isFinite(sec) ? Math.max(0, Math.floor(sec)) : null;
-                    const endDateIso = c?.endDateIso != null ? String(c.endDateIso) : null;
-                    const endMs = endDateIso ? Date.parse(endDateIso) : NaN;
-                    const computedEndDateIso = (!Number.isFinite(endMs) && secOk != null) ? new Date(Date.now() + secOk * 1000).toISOString() : null;
-                    const upPrice = c?.upPrice != null ? Number(c.upPrice) : null;
-                    const downPrice = c?.downPrice != null ? Number(c.downPrice) : null;
-                    const upAsk = upPrice != null && Number.isFinite(upPrice) ? 1 : 0;
-                    const downAsk = downPrice != null && Number.isFinite(downPrice) ? 1 : 0;
-                    const meetsMinProb = c?.meetsMinProb === true;
-                    const eligibleByExpiry = c?.eligibleByExpiry === true;
-                    return {
-                        symbol: String(c?.symbol || '').toUpperCase() || '-',
-                        timeframe: String(c?.timeframe || ''),
-                        title: c?.question ?? c?.title ?? null,
-                        slug: c?.slug ?? null,
-                        conditionId: c?.conditionId ?? null,
-                        endDate: endDateIso || computedEndDateIso,
-                        secondsToExpire: secOk,
-                        eligibleByExpiry,
-                        meetsMinProb,
-                        outcomes: ['Up', 'Down'],
-                        prices: [upPrice, downPrice],
-                        asksCount: [upAsk, downAsk],
-                        chosenIndex: c?.chosenIndex ?? null,
-                        chosenOutcome: c?.chosenOutcome ?? null,
-                        chosenPrice: c?.chosenPrice ?? null,
-                        reason: !eligibleByExpiry ? 'expiry' : !meetsMinProb ? 'price' : null,
-                        snapshotAt: null,
-                        staleMs: null,
-                        booksAttemptError: c?.riskError ?? null,
-                    };
-                });
-                const sorted = sortCandidates(mapped);
-                const nowMs = Date.now();
-                const monitorWindowSec = 1800;
-                const sticky = cryptoAllStickyCandidatesRef.current;
-                const seen = new Set<string>();
-                for (const r of sorted) {
-                    const cid = String(r?.conditionId || '');
-                    const tf = String(r?.timeframe || '');
-                    const k = cid ? `${tf}:${cid}` : `${tf}:${String(r?.slug || '')}:${String(r?.symbol || '')}`;
-                    seen.add(k);
-                    const prev = sticky.get(k) || {};
-                    sticky.set(k, { ...prev, ...r, _lastSeenAtMs: nowMs });
-                }
-                for (const [k, v] of Array.from(sticky.entries())) {
-                    if (!v) { sticky.delete(k); continue; }
-                    const endMs = v?.endDate ? Date.parse(String(v.endDate)) : NaN;
-                    if (Number.isFinite(endMs)) {
-                        const sec = Math.floor((endMs - nowMs) / 1000);
-                        v.secondsToExpire = Math.max(0, sec);
-                    }
-                    const secNum = v?.secondsToExpire != null ? Number(v.secondsToExpire) : NaN;
-                    const expired = Number.isFinite(endMs) ? endMs <= nowMs : (Number.isFinite(secNum) ? secNum <= 0 : false);
-                    if (expired) { sticky.delete(k); continue; }
-                    const inWindow = Number.isFinite(secNum) ? secNum <= monitorWindowSec : (Number.isFinite(endMs) ? (endMs - nowMs) <= monitorWindowSec * 1000 : false);
-                    if (!seen.has(k) && !inWindow) sticky.delete(k);
-                }
-                const merged = sortCandidates(Array.from(sticky.values()));
+                const list = Array.isArray(rr.data?.candidates) ? rr.data.candidates : [];
+                const sorted = sortCandidates(list);
                 const count = Number(rr.data?.count ?? sorted.length);
-                const eligible = Number(sorted.filter((c: any) => c?.meetsMinProb === true && c?.eligibleByExpiry === true).length);
-                const nextSig = merged.slice(0, 120).map((r: any) => `${String(r?.timeframe || '')}:${String(r?.conditionId || '')}:${String(r?.slug || '')}:${String(r?.symbol || '')}:${String(r?.chosenPrice ?? '')}:${r?.meetsMinProb === true ? 1 : 0}:${r?.eligibleByExpiry === true ? 1 : 0}`).join('|');
+                const eligible = Number(rr.data?.countEligible ?? sorted.filter((c: any) => c?.meetsMinProb === true && c?.eligibleByExpiry === true && c?.reason == null).length);
+                const nextSig = sorted.slice(0, 120).map((r: any) => `${String(r?.timeframe || '')}:${String(r?.symbol || '')}:${String(r?.conditionId || '')}:${String(r?.secondsToExpire ?? '')}:${String(r?.chosenPrice ?? '')}:${r?.meetsMinProb === true ? 1 : 0}:${r?.eligibleByExpiry === true ? 1 : 0}`).join('|');
                 const nextMetaSig = `${count}:${eligible}`;
-                // Force update without sig check
-                setCandidates(merged);
+                setCandidates(sorted);
                 candidatesSigRef.current = nextSig;
                 if (nextMetaSig !== candidatesMetaSigRef.current) {
                     candidatesMetaSigRef.current = nextMetaSig;
@@ -690,12 +847,16 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
             return;
         }
         try {
-            const res = await apiGet('candidates_15m', '/group-arb/crypto15m/candidates', { params: { minProb, expiresWithinSec, limit: 20 } });
+            const params: any = { minProb, expiresWithinSec, limit: 30 };
+            if (apiNamespace === 'crypto15m2') {
+                params.timeframes = (m2Timeframes && m2Timeframes.length ? m2Timeframes : ['15m', '5m']).join(',');
+            }
+            const res = await apiGet('candidates_15m', `${apiBase}/candidates`, { params });
             const list = Array.isArray(res.data?.candidates) ? res.data.candidates : [];
             const sorted = sortCandidates(list);
             const count = Number(res.data?.count ?? sorted.length);
             const eligible = Number(res.data?.countEligible ?? sorted.filter((c: any) => c?.meetsMinProb === true && c?.eligibleByExpiry === true).length);
-            const nextSig = sorted.slice(0, 60).map((r: any) => `${String(r?.conditionId || '')}:${String(r?.chosenPrice ?? '')}:${r?.meetsMinProb === true ? 1 : 0}:${r?.eligibleByExpiry === true ? 1 : 0}`).join('|');
+            const nextSig = sorted.slice(0, 60).map((r: any) => `${String(r?.timeframe || '')}:${String(r?.conditionId || '')}:${String(r?.chosenPrice ?? '')}:${String(r?.riskScore ?? '')}:${String(r?.riskState ?? '')}:${r?.meetsMinProb === true ? 1 : 0}:${r?.eligibleByExpiry === true ? 1 : 0}`).join('|');
             const nextMetaSig = `${count}:${eligible}`;
                 // Force update without sig check
                 setCandidates(sorted);
@@ -719,12 +880,8 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const fetchDeltaBox = async () => {
         const baseSymbols = ['BTC', 'ETH', 'SOL', 'XRP'] as Array<'BTC' | 'ETH' | 'SOL' | 'XRP'>;
         const baseTimeframes = ['5m', '15m', '1h', '4h', '1d'] as Array<'5m' | '15m' | '1h' | '4h' | '1d'>;
-        const symbols = variant === 'all' ? (allSymbols.length ? allSymbols : baseSymbols) : baseSymbols;
-        const timeframes = variant === 'all' ? (allTimeframes.length ? allTimeframes : baseTimeframes) : baseTimeframes;
-        if (!symbols.length || !timeframes.length) {
-            setDeltaBoxData(null);
-            return;
-        }
+        const symbols = baseSymbols;
+        const timeframes = baseTimeframes;
         setDeltaBoxLoading(true);
         try {
             const r = await apiGet('delta_box', '/group-arb/crypto/delta-box', {
@@ -747,9 +904,10 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         setHistoryLastError(null);
         try {
             if (historyStrategy === 'crypto15m') {
-                const res = await apiGet('history_15m', '/group-arb/crypto15m/history', { params: { refresh: true, intervalMs: 1000, maxEntries: 50 } });
+                const hist15Endpoint = variant === 'all' ? '/group-arb/crypto15m/history' : `${apiBase}/history`;
+                const res = await apiGet('history_15m', hist15Endpoint, { params: { refresh: true, intervalMs: 1000, maxEntries: 50 } });
                 const h = Array.isArray(res.data?.history) ? res.data.history : [];
-                const nextHistory = h.map((x: any) => ({ ...x, strategy: 'crypto15m' }));
+                const nextHistory = h.map((x: any) => ({ ...x, strategy: apiNamespace }));
                 const nextSig = nextHistory.slice(0, 120).map((x: any) => `${String(x?.id ?? '')}:${String(x?.orderStatus ?? '')}:${String(x?.filledSize ?? '')}:${String(x?.result ?? '')}:${String(x?.state ?? '')}`).join('|');
                 const nextSummary = res.data?.summary || null;
                 const nextConfig = Array.isArray(res.data?.configEvents) ? res.data.configEvents : [];
@@ -844,7 +1002,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     };
 
     const fetchStoplossHistory = async () => {
-        const endpoint = variant === 'all' ? '/group-arb/cryptoall/stoploss/history' : '/group-arb/crypto15m/stoploss/history';
+        const endpoint = variant === 'all' ? '/group-arb/cryptoall/stoploss/history' : `${apiBase}/stoploss/history`;
         const res = await apiGet('stoploss_history', endpoint, { params: { maxEntries: 120 } });
         setStoplossHistory(Array.isArray(res.data?.history) ? res.data.history : []);
         setStoplossSummary(res.data?.summary || null);
@@ -864,7 +1022,8 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         setAnalysisLoading(true);
         try {
             const tradeId = opts?.tradeId != null ? Number(opts.tradeId) : null;
-            const res = await apiGet('trade_analysis', '/group-arb/crypto15m/analysis/trades', {
+            const endpoint = variant === 'all' ? '/group-arb/crypto15m/analysis/trades' : `${apiBase}/analysis/trades`;
+            const res = await apiGet('trade_analysis', endpoint, {
                 params: { limit: 100, tradeId: tradeId != null ? tradeId : undefined },
             });
             setAnalysisData(res.data || null);
@@ -872,7 +1031,8 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
             const nextId = tradeId != null ? tradeId : (analysisTradeId != null ? analysisTradeId : firstId);
             if (tradeId == null && nextId != null && nextId !== analysisTradeId) {
                 setAnalysisTradeId(nextId);
-                const res2 = await apiGet('trade_analysis_detail', '/group-arb/crypto15m/analysis/trades', { params: { limit: 100, tradeId: nextId } });
+                const endpoint2 = variant === 'all' ? '/group-arb/crypto15m/analysis/trades' : `${apiBase}/analysis/trades`;
+                const res2 = await apiGet('trade_analysis_detail', endpoint2, { params: { limit: 100, tradeId: nextId } });
                 setAnalysisData(res2.data || null);
             }
         } finally {
@@ -999,8 +1159,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         watchdogInFlightRef.current = true;
         setWatchdogLastError(null);
         try {
-            const endpoint = variant === 'all' ? '/group-arb/cryptoall/watchdog/status' : '/group-arb/crypto15m/watchdog/status';
-            const r = await apiGet('watchdog', endpoint);
+            const r = await apiGet('watchdog', `${apiBase}/watchdog/status`);
             setWatchdog(r.data?.status);
         } catch (e: any) {
             const msg = e?.response?.data?.error || e?.message || String(e);
@@ -1014,7 +1173,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const fetchThresholds = async () => {
         setThresholdsLoading(true);
         try {
-            const endpoint = variant === 'all' ? '/group-arb/cryptoall/delta-thresholds' : '/group-arb/crypto15m/delta-thresholds';
+            const endpoint = variant === 'all' ? '/group-arb/cryptoall/delta-thresholds' : `${apiBase}/delta-thresholds`;
             const r = await apiGet('thresholds', endpoint);
             const t = r.data?.thresholds || {};
             setSavedDeltaThresholds(t);
@@ -1072,8 +1231,20 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                         expiresWithinSec: Math.max(...Object.values(expiresWithinSecByTimeframe || { '5m': expiresWithinSec, '15m': expiresWithinSec, '1h': expiresWithinSec, '4h': expiresWithinSec, '1d': expiresWithinSec })),
                         expiresWithinSecByTimeframe,
                         pollMs,
-                        symbols: allSymbols,
-                        timeframes: allTimeframes,
+                        symbols: ['BTC', 'ETH', 'SOL', 'XRP'],
+                        timeframes: ['5m', '15m', '1h', '4h', '1d'],
+                        sweepEnabled,
+                        sweepWindowSecByTimeframe,
+                        sweepMaxOrdersPerMarket,
+                        sweepMaxTotalUsdPerMarket,
+                        sweepMinIntervalMs,
+                        dojiGuardEnabled: allDojiGuardEnabled,
+                        riskSkipScore: allRiskSkipScore,
+                        riskAddOnBlockScore: allRiskAddOnBlockScore,
+                        addOnTrendEnabled: allAddOnTrendEnabled,
+                        addOnTrendMinutesA: allAddOnTrendMinutesA,
+                        addOnTrendMinutesB: allAddOnTrendMinutesB,
+                        addOnTrendMinutesC: allAddOnTrendMinutesC,
                         stoplossEnabled,
                         stoplossCut1DropCents,
                         stoplossCut1SellPct,
@@ -1087,12 +1258,13 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 ]);
             } else {
                 await Promise.all([
-                    apiPost('save_deltas_15m', '/group-arb/crypto15m/delta-thresholds', { btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta }),
-                    apiPost('save_config_15m', '/group-arb/crypto15m/config', {
+                    apiPost('save_deltas_15m', `${apiBase}/delta-thresholds`, { btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta }),
+                    apiPost('save_config_15m', `${apiBase}/config`, {
                         amountUsd,
                         buySizingMode,
                         minProb,
                         expiresWithinSec,
+                        ...(apiNamespace === 'crypto15m2' ? { expiresWithinSecByTimeframe: { '5m': Number(expiresWithinSecByTimeframe?.['5m'] ?? expiresWithinSec), '15m': Number(expiresWithinSecByTimeframe?.['15m'] ?? expiresWithinSec) } } : {}),
                         pollMs,
                         sweepEnabled,
                         sweepWindowSec,
@@ -1101,6 +1273,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                         sweepMinIntervalMs,
                         trendEnabled,
                         trendMinutes,
+                        ...(apiNamespace === 'crypto15m2' ? { timeframes: (m2Timeframes && m2Timeframes.length ? m2Timeframes : ['15m', '5m']), dojiGuardEnabled: allDojiGuardEnabled, riskSkipScore: allRiskSkipScore } : {}),
                         staleMsThreshold,
                         stoplossEnabled,
                         stoplossCut1DropCents,
@@ -1140,10 +1313,10 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const testApi = useCallback(async () => {
         try {
             const candEndpoint = '/group-arb/cryptoall/candidates';
-            const hist15Endpoint = '/group-arb/crypto15m/history';
+            const hist15Endpoint = variant === 'all' ? '/group-arb/crypto15m/history' : `${apiBase}/history`;
             const histAllEndpoint = '/group-arb/cryptoall/history';
-            const symbols = allSymbols.length ? allSymbols.join(',') : 'BTC,ETH,SOL,XRP';
-            const timeframes = allTimeframes.length ? allTimeframes.join(',') : '5m,15m,1h,4h,1d';
+            const symbols = 'BTC,ETH,SOL,XRP';
+            const timeframes = '5m,15m,1h,4h,1d';
             const [candRes, h15Res, hAllRes] = await Promise.all([
                 apiGet('test_cand_all', candEndpoint, { params: { symbols, timeframes, minProb, expiresWithinSec, limit: 25 } }),
                 apiGet('test_hist_15', hist15Endpoint, { params: { refresh: true, intervalMs: 1000, maxEntries: 50, includeSkipped: true } }),
@@ -1173,7 +1346,6 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
         candidatesMetaSigRef.current = '';
         historySigRef.current = '';
         historyMetaSigRef.current = '';
-        cryptoAllStickyCandidatesRef.current.clear();
         setCandidates([]);
         setCandidatesMeta(null);
         setStatus(null);
@@ -1255,7 +1427,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     }, [historyStrategy]);
 
     useEffect(() => {
-        if (safeMode || variant === 'all') {
+        if (safeMode || (variant === 'all' && (!allSymbols.length || !allTimeframes.length))) {
             wsSessionRef.current += 1;
             if (wsReconnectTimerRef.current) clearTimeout(wsReconnectTimerRef.current);
             const prevWs = wsRef.current;
@@ -1304,8 +1476,10 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 wsRef.current = null;
             }
             const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-            const wsPath = apiPath('/group-arb/crypto15m/ws');
-            const wsUrl = `${protocol}://${window.location.host}/api${wsPath}?minProb=${encodeURIComponent(String(minProb))}&expiresWithinSec=${encodeURIComponent(String(expiresWithinSec))}&limit=20`;
+            const wsPath = apiPath(`${apiBase}/ws`);
+            const wsUrl = variant === 'all'
+                ? `${protocol}://${window.location.host}/api${wsPath}?symbols=${encodeURIComponent(allSymbols.join(','))}&timeframes=${encodeURIComponent(allTimeframes.join(','))}&minProb=${encodeURIComponent(String(minProb))}&expiresWithinSec=${encodeURIComponent(String(expiresWithinSec))}&limit=40`
+                : `${protocol}://${window.location.host}/api${wsPath}?minProb=${encodeURIComponent(String(minProb))}&expiresWithinSec=${encodeURIComponent(String(expiresWithinSec))}&limit=20${apiNamespace === 'crypto15m2' ? `&timeframes=${encodeURIComponent((m2Timeframes && m2Timeframes.length ? m2Timeframes : ['15m', '5m']).join(','))}` : ''}`;
             const ws = new WebSocket(wsUrl);
             wsRef.current = ws;
             setWsError(null);
@@ -1346,8 +1520,9 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                             const list = Array.isArray(payload?.candidates) ? payload.candidates : [];
                             const sorted = sortCandidates(list);
                             const count = Number(payload?.count ?? sorted.length);
-                            const eligible = Number(payload?.countEligible ?? sorted.filter((c: any) => c?.meetsMinProb === true && c?.eligibleByExpiry === true).length);
-                            const nextSig = sorted.slice(0, 60).map((r: any) => `${String(r?.conditionId || '')}:${String(r?.secondsToExpire ?? '')}:${String(r?.chosenPrice ?? '')}:${r?.meetsMinProb === true ? 1 : 0}:${r?.eligibleByExpiry === true ? 1 : 0}`).join('|');
+                            const eligible = Number(payload?.countEligible ?? sorted.filter((c: any) => c?.meetsMinProb === true && c?.eligibleByExpiry === true && c?.reason == null).length);
+                            const sigCap = variant === 'all' ? 120 : 60;
+                            const nextSig = sorted.slice(0, sigCap).map((r: any) => `${String(r?.timeframe || '')}:${String(r?.symbol || '')}:${String(r?.conditionId || '')}:${String(r?.secondsToExpire ?? '')}:${String(r?.chosenPrice ?? '')}:${r?.meetsMinProb === true ? 1 : 0}:${r?.eligibleByExpiry === true ? 1 : 0}`).join('|');
                             const nextMetaSig = `${count}:${eligible}`;
                             if (nextSig !== candidatesSigRef.current) {
                                 candidatesSigRef.current = nextSig;
@@ -1359,6 +1534,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                             }
                         }
                         setWsLastAt(String(msg?.at || new Date().toISOString()));
+                        setCandidatesLastOkAt(String(msg?.at || new Date().toISOString()));
                         setWsError(null);
                     }
                     if (msg?.type === 'error') {
@@ -1384,7 +1560,35 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 wsRef.current = null;
             }
         };
-    }, [apiPath, autoRefresh, minProb, expiresWithinSec, safeMode, variant]);
+    }, [apiPath, autoRefresh, minProb, expiresWithinSec, safeMode, variant, allSymbols.join(','), allTimeframes.join(',')]);
+
+    useEffect(() => {
+        if (!wsConnected) return;
+        if (!autoRefresh) return;
+        if (safeMode) return;
+        const t = setInterval(() => {
+            if (!wsConnected) return;
+            const lastIso = wsLastAt;
+            const lastAtMs = lastIso ? (Date.parse(String(lastIso)) || 0) : 0;
+            if (lastAtMs <= 0) return;
+            const staleMs = Date.now() - lastAtMs;
+            if (staleMs <= 5_000) return;
+            const prevWs = wsRef.current;
+            if (prevWs) {
+                try {
+                    (prevWs as any).onopen = null;
+                    (prevWs as any).onmessage = null;
+                    (prevWs as any).onerror = null;
+                    (prevWs as any).onclose = null;
+                } catch {}
+                try { prevWs.close(); } catch {}
+                wsRef.current = null;
+            }
+            setWsError(`ws stale ${Math.floor(staleMs / 1000)}s`);
+            setWsConnected(false);
+        }, 1000);
+        return () => clearInterval(t);
+    }, [wsConnected, wsLastAt, autoRefresh, safeMode]);
 
     const onStart = async () => {
         setStartLoading(true);
@@ -1394,9 +1598,22 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                     amountUsd,
                     minProb,
                     expiresWithinSec,
+                    expiresWithinSecByTimeframe,
                     pollMs,
-                    symbols: allSymbols,
-                    timeframes: allTimeframes,
+                    symbols: ['BTC', 'ETH', 'SOL', 'XRP'],
+                    timeframes: ['5m', '15m', '1h', '4h', '1d'],
+                    sweepEnabled,
+                    sweepWindowSecByTimeframe,
+                    sweepMaxOrdersPerMarket,
+                    sweepMaxTotalUsdPerMarket,
+                    sweepMinIntervalMs,
+                    dojiGuardEnabled: allDojiGuardEnabled,
+                    riskSkipScore: allRiskSkipScore,
+                    riskAddOnBlockScore: allRiskAddOnBlockScore,
+                    addOnTrendEnabled: allAddOnTrendEnabled,
+                    addOnTrendMinutesA: allAddOnTrendMinutesA,
+                    addOnTrendMinutesB: allAddOnTrendMinutesB,
+                    addOnTrendMinutesC: allAddOnTrendMinutesC,
                     stoplossEnabled,
                     stoplossCut1DropCents,
                     stoplossCut1SellPct,
@@ -1408,7 +1625,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                     adaptiveDeltaRevertNoBuyCount,
                 });
             } else {
-                await apiPost('auto_start_15m', '/group-arb/crypto15m/auto/start', {
+                await apiPost('auto_start_15m', `${apiBase}/auto/start`, {
                     amountUsd,
                     minProb,
                     expiresWithinSec,
@@ -1442,8 +1659,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const onStop = async () => {
         setStopLoading(true);
         try {
-            const endpoint = variant === 'all' ? '/group-arb/cryptoall/auto/stop' : '/group-arb/crypto15m/auto/stop';
-            await apiPost('auto_stop', endpoint);
+            await apiPost('auto_stop', `${apiBase}/auto/stop`);
         } finally {
             setStopLoading(false);
         }
@@ -1453,8 +1669,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const onStartWatchdog = async () => {
         setWatchdogStartLoading(true);
         try {
-            const endpoint = variant === 'all' ? '/group-arb/cryptoall/watchdog/start' : '/group-arb/crypto15m/watchdog/start';
-            await apiPost('watchdog_start', endpoint, { durationHours: 12, pollMs: 30000 });
+            await apiPost('watchdog_start', `${apiBase}/watchdog/start`, { durationHours: 12, pollMs: 30000 });
         } finally {
             setWatchdogStartLoading(false);
         }
@@ -1464,8 +1679,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const onStopWatchdog = async () => {
         setWatchdogStopLoading(true);
         try {
-            const endpoint = variant === 'all' ? '/group-arb/cryptoall/watchdog/stop' : '/group-arb/crypto15m/watchdog/stop';
-            await apiPost('watchdog_stop', endpoint, { reason: 'manual_ui_stop', stopAuto: true });
+            await apiPost('watchdog_stop', `${apiBase}/watchdog/stop`, { reason: 'manual_ui_stop', stopAuto: true });
         } finally {
             setWatchdogStopLoading(false);
         }
@@ -1475,10 +1689,11 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const onBid = async (row: any) => {
         setBidLoadingId(String(row?.conditionId || ''));
         try {
-            const endpoint = variant === 'all' ? '/group-arb/cryptoall/order' : '/group-arb/crypto15m/order';
+            const endpoint = `${apiBase}/order`;
             const body: any = {
                 conditionId: row.conditionId,
                 outcomeIndex: row.chosenIndex,
+                chosenTokenId: row?.chosenTokenId != null ? String(row.chosenTokenId) : undefined,
                 amountUsd,
                 minPrice: minProb,
                 stoplossEnabled,
@@ -1519,8 +1734,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
     const onResetActive = async () => {
         setResetLoading(true);
         try {
-            const endpoint = variant === 'all' ? '/group-arb/cryptoall/active/reset' : '/group-arb/crypto15m/active/reset';
-            await apiPost('reset_active', endpoint);
+            await apiPost('reset_active', `${apiBase}/active/reset`);
         } finally {
             setResetLoading(false);
         }
@@ -1536,7 +1750,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 width: 90,
                 render: (v: any) => <Tag color="blue">{String(v || '').toUpperCase() || '-'}</Tag>,
             },
-            ...(variant === 'all' ? [{
+            ...((variant === 'all' || apiNamespace === 'crypto15m2') ? [{
                 title: 'TF',
                 dataIndex: 'timeframe',
                 key: 'timeframe',
@@ -1564,7 +1778,10 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 dataIndex: 'secondsToExpire',
                 key: 'secondsToExpire',
                 width: 110,
-                render: (_: any, r: any) => <CountdownTag endDate={r.endDate} fallbackSeconds={r.secondsToExpire} />,
+                render: (v: any) => {
+                    const sec = v != null ? Number(v) : null;
+                    return sec != null && Number.isFinite(sec) ? <Tag color={Number(sec) <= 30 ? 'red' : 'gold'} style={{ display: 'inline-block', minWidth: 44, textAlign: 'center' }}>{String(sec)}</Tag> : '-';
+                },
             },
             {
                 title: 'Outcomes',
@@ -1600,24 +1817,41 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                     );
                 },
             },
+            ...(apiNamespace === 'crypto15m2' ? [{
+                title: 'Risk',
+                key: 'risk',
+                width: 95,
+                render: (_: any, r: any) => {
+                    const st = String(r?.riskState || '');
+                    const sc = r?.riskScore != null ? Number(r.riskScore) : null;
+                    if (st === 'ready' && sc != null && Number.isFinite(sc)) {
+                        const color = sc >= 80 ? 'red' : sc >= 60 ? 'orange' : 'green';
+                        return <Tag color={color}>{String(Math.floor(sc))}</Tag>;
+                    }
+                    if (st === 'error') return <Tag color="red">ERR</Tag>;
+                    return <Tag>...</Tag>;
+                }
+            }] : []),
             {
                 title: 'Action',
                 key: 'action',
                 width: 160,
                 render: (_: any, r: any) => (
-                    <Button
-                        icon={<ShoppingCartOutlined />}
-                        onClick={() => onBid(r)}
-                        disabled={!!status?.actives?.[String(r.symbol || '').toUpperCase()]}
-                        loading={bidLoadingId === String(r.conditionId)}
-                    >
-                        Bid ${amountUsd}
-                    </Button>
+                    <Tooltip title="下單會即時從 CLOB /books 再取一次最優價（唔使等畫面 refresh）">
+                        <Button
+                            icon={<ShoppingCartOutlined />}
+                            onClick={() => onBid(r)}
+                            disabled={!!status?.actives?.[String(r.symbol || '').toUpperCase()]}
+                            loading={bidLoadingId === String(r.conditionId)}
+                        >
+                            Bid ${amountUsd}
+                        </Button>
+                    </Tooltip>
                 ),
             },
         ];
         return base;
-    }, [variant, amountUsd, status?.actives, bidLoadingId]);
+    }, [variant, apiNamespace, amountUsd, status?.actives, bidLoadingId]);
 
     const historyColumns = useMemo(() => {
         return [
@@ -1905,7 +2139,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 const nowMs = Date.now();
                 const minIntervalMs = Math.max(5_000, Math.floor(Math.max(5, Number(deltaBoxAutoConfirmMinIntervalSec) || 60) * 1000));
                 if ((nowMs - (deltaBoxAutoConfirmLastSavedAtMsRef.current || 0)) >= minIntervalMs) {
-                    const endpoint = variant === 'all' ? '/group-arb/cryptoall/delta-thresholds' : '/group-arb/crypto15m/delta-thresholds';
+                    const endpoint = variant === 'all' ? '/group-arb/cryptoall/delta-thresholds' : `${apiBase}/delta-thresholds`;
                     const payload: any = variant === 'all'
                         ? { byTimeframe: (() => {
                             const nextAll: any = { ...cryptoAllDeltaByTimeframe };
@@ -2077,9 +2311,13 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                         }}
                     />
                     <span style={{ color: '#ddd' }}>Expire ≤ (sec)</span>
-                    {variant === 'all' ? (
+                    {(variant === 'all' || apiNamespace === 'crypto15m2') ? (
                         <>
-                            <Button size="small" onClick={() => setExpiryBulkOpen(!expiryBulkOpen)} style={{ marginLeft: 4 }}>
+                            <Button size="small" onClick={() => setExpiryBulkOpen((p) => {
+                                const next = !p;
+                                if (next) setTimeout(() => applyExpiresDraftFromState(), 0);
+                                return next;
+                            })} style={{ marginLeft: 4 }}>
                                 {expiryBulkOpen ? 'Hide Bulk' : 'Edit Bulk'}
                             </Button>
                             {expiryBulkOpen && (
@@ -2087,34 +2325,49 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                                         <Tag color="gold" style={{ marginRight: 0 }}>ALL</Tag>
                                         <InputNumber
-                                            min={10}
-                                            max={3600}
-                                            step={5}
+                                            min="10"
+                                            max="3600"
+                                            step="5"
                                             style={{ width: 96 }}
-                                            value={Math.max(...Object.values(expiresWithinSecByTimeframe || { '5m': 180, '15m': 180, '1h': 180, '4h': 180, '1d': 180 }))}
-                                            onChange={(v) => {
-                                                const n = Math.max(10, Math.min(3600, Math.floor(Number(v))));
-                                                if (!Number.isFinite(n)) return;
-                                                setExpiresWithinSecByTimeframe((p) => {
-                                                    const next: any = { ...p };
-                                                    for (const tf of ['5m', '15m', '1h', '4h', '1d'] as const) next[tf] = n;
-                                                    return next;
-                                                });
+                                            stringMode
+                                            value={expiresBulkDraft}
+                                            onFocus={() => {
+                                                beginEditing();
+                                                applyExpiresDraftFromState();
                                             }}
+                                            onChange={(v) => setExpiresBulkDraft(v == null ? '' : String(v))}
+                                            onBlur={() => {
+                                                endEditingSoon();
+                                                commitExpiresBulk();
+                                            }}
+                                            onPressEnter={() => commitExpiresBulk()}
                                         />
                                         <span style={{ color: '#666', fontSize: 12 }}>(Set ALL TFs)</span>
+                                        <Button size="small" onClick={loadExpiresFromServer} disabled={!status?.config}>
+                                            Load
+                                        </Button>
                                     </div>
                                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                                        {(['5m', '15m', '1h', '4h', '1d'] as const).map((tf) => (
+                                        {(apiNamespace === 'crypto15m2' ? (['5m', '15m'] as const) : (['5m', '15m', '1h', '4h', '1d'] as const)).map((tf) => (
                                             <Space key={tf} size={4} direction="vertical" style={{ gap: 0 }}>
                                                 <Tag color="geekblue" style={{ marginRight: 0, width: '100%', textAlign: 'center' }}>{String(tf).toUpperCase()}</Tag>
                                                 <InputNumber
-                                                    min={10}
-                                                    max={3600}
-                                                    step={5}
-                                                    value={expiresWithinSecByTimeframe[tf]}
+                                                    min="10"
+                                                    max="3600"
+                                                    step="5"
+                                                    stringMode
+                                                    value={(expiresByTfDraft as any)[tf]}
                                                     style={{ width: 80 }}
-                                                    onChange={(v) => setExpiresWithinSecByTimeframe((p) => ({ ...p, [tf]: Math.max(10, Math.min(3600, Math.floor(Number(v)))) }))}
+                                                    onFocus={() => {
+                                                        beginEditing();
+                                                        setExpiresByTfDraft((p) => ({ ...p, [tf]: String((expiresWithinSecByTimeframe as any)[tf] ?? 180) }));
+                                                    }}
+                                                    onChange={(v) => setExpiresByTfDraft((p) => ({ ...p, [tf]: v == null ? '' : String(v) }))}
+                                                    onBlur={() => {
+                                                        endEditingSoon();
+                                                        commitExpiresTf(tf);
+                                                    }}
+                                                    onPressEnter={() => commitExpiresTf(tf)}
                                                 />
                                             </Space>
                                         ))}
@@ -2139,19 +2392,111 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                         ]}
                     />
                     <Checkbox checked={sweepEnabled} onChange={(e) => setSweepEnabled(e.target.checked)}>Sweep</Checkbox>
-                    <span style={{ color: '#ddd' }}>Window(s)</span>
-                    <InputNumber min={0} max={900} step={1} value={sweepWindowSec} onChange={(v) => setSweepWindowSec(Math.max(0, Math.min(900, Math.floor(Number(v)))))} />
+                {variant === 'all' ? (
+                    <>
+                        <Button size="small" onClick={() => setSweepBulkOpen((p) => {
+                            const next = !p;
+                            if (next) setTimeout(() => applySweepDraftFromState(), 0);
+                            return next;
+                        })} style={{ marginLeft: 4 }}>
+                            {sweepBulkOpen ? 'Hide Bulk' : 'Edit Bulk'}
+                        </Button>
+                        {sweepBulkOpen && (
+                            <div style={{ width: '100%', padding: '8px 0', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <span style={{ color: '#ddd' }}>Window(s)</span>
+                                    <Tag color="gold" style={{ marginRight: 0 }}>ALL</Tag>
+                                    <InputNumber
+                                        min="0"
+                                        max="900"
+                                        step="1"
+                                        style={{ width: 96 }}
+                                        stringMode
+                                        value={sweepBulkDraft}
+                                        onFocus={() => {
+                                            beginEditing();
+                                            applySweepDraftFromState();
+                                        }}
+                                        onChange={(v) => setSweepBulkDraft(v == null ? '' : String(v))}
+                                        onBlur={() => {
+                                            endEditingSoon();
+                                            commitSweepBulk();
+                                        }}
+                                        onPressEnter={() => commitSweepBulk()}
+                                    />
+                                    <span style={{ color: '#666', fontSize: 12 }}>(Set ALL TFs)</span>
+                                    <Button size="small" onClick={loadSweepFromServer} disabled={!status?.config}>
+                                        Load
+                                    </Button>
+                                </div>
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                                    {(['5m', '15m', '1h', '4h', '1d'] as const).map((tf) => (
+                                        <Space key={tf} size={4} direction="vertical" style={{ gap: 0 }}>
+                                            <Tag color="geekblue" style={{ marginRight: 0, width: '100%', textAlign: 'center' }}>{String(tf).toUpperCase()}</Tag>
+                                            <InputNumber
+                                                min="0"
+                                                max="900"
+                                                step="1"
+                                                stringMode
+                                                value={(sweepByTfDraft as any)[tf]}
+                                                style={{ width: 80 }}
+                                                onFocus={() => {
+                                                    beginEditing();
+                                                    setSweepByTfDraft((p) => ({ ...p, [tf]: String((sweepWindowSecByTimeframe as any)[tf] ?? 30) }));
+                                                }}
+                                                onChange={(v) => setSweepByTfDraft((p) => ({ ...p, [tf]: v == null ? '' : String(v) }))}
+                                                onBlur={() => {
+                                                    endEditingSoon();
+                                                    commitSweepTf(tf);
+                                                }}
+                                                onPressEnter={() => commitSweepTf(tf)}
+                                            />
+                                        </Space>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </>
+                ) : (
+                    <>
+                        <span style={{ color: '#ddd' }}>Window(s)</span>
+                        <InputNumber min={0} max={900} step={1} value={sweepWindowSec} onChange={(v) => setSweepWindowSec(Math.max(0, Math.min(900, Math.floor(Number(v)))))} />
+                    </>
+                )}
                     <span style={{ color: '#ddd' }}>MaxOrders</span>
                     <InputNumber min={1} max={200} step={1} value={sweepMaxOrdersPerMarket} onChange={(v) => setSweepMaxOrdersPerMarket(Math.max(1, Math.min(200, Math.floor(Number(v)))))} />
                     <span style={{ color: '#ddd' }}>MaxTotal($)</span>
                     <InputNumber min={1} max={50000} step={1} value={sweepMaxTotalUsdPerMarket} onChange={(v) => setSweepMaxTotalUsdPerMarket(Math.max(1, Math.min(50000, Math.floor(Number(v)))))} />
                     <span style={{ color: '#ddd' }}>MinInt(ms)</span>
                     <InputNumber min={0} max={30000} step={50} value={sweepMinIntervalMs} onChange={(v) => setSweepMinIntervalMs(Math.max(0, Math.min(30000, Math.floor(Number(v)))))} />
-                    <Checkbox checked={trendEnabled} onChange={(e) => setTrendEnabled(e.target.checked)}>Trend</Checkbox>
-                    <span style={{ color: '#ddd' }}>Min</span>
-                    <InputNumber min={1} max={10} step={1} value={trendMinutes} onChange={(v) => setTrendMinutes(Math.max(1, Math.min(10, Math.floor(Number(v)))))} disabled={!trendEnabled} />
-                    <span style={{ color: '#ddd' }}>Stale(ms)</span>
-                    <InputNumber min={500} max={60000} step={250} value={staleMsThreshold} onChange={(v) => setStaleMsThreshold(Math.max(500, Math.min(60000, Math.floor(Number(v)))))} />
+                    {variant === 'all' ? (
+                        <>
+                            <Button size="small" onClick={() => setAllRiskPopupOpen(true)}>
+                                Doji/Trend/Risk…
+                            </Button>
+                            <Tag color={allDojiGuardEnabled ? 'gold' : 'default'}>Doji:{allDojiGuardEnabled ? 'ON' : 'OFF'}</Tag>
+                            <Tag color={allAddOnTrendEnabled ? 'blue' : 'default'}>Trend:{allAddOnTrendEnabled ? 'ON' : 'OFF'}</Tag>
+                            <Tag color="purple">RiskSkip:{Math.floor(Number(allRiskSkipScore) || 0)}</Tag>
+                        </>
+                    ) : (
+                        <>
+                            {apiNamespace === 'crypto15m2' ? (
+                                <>
+                                    <Button size="small" onClick={() => setAllRiskPopupOpen(true)}>
+                                        Doji/Risk/TF…
+                                    </Button>
+                                    <Tag color={allDojiGuardEnabled ? 'gold' : 'default'}>Doji:{allDojiGuardEnabled ? 'ON' : 'OFF'}</Tag>
+                                    <Tag color="purple">RiskSkip:{Math.floor(Number(allRiskSkipScore) || 0)}</Tag>
+                                    <Tag color="blue">TF:{(m2Timeframes && m2Timeframes.length ? m2Timeframes : ['15m', '5m']).join(',')}</Tag>
+                                </>
+                            ) : null}
+                            <Checkbox checked={trendEnabled} onChange={(e) => setTrendEnabled(e.target.checked)}>Trend</Checkbox>
+                            <span style={{ color: '#ddd' }}>Min</span>
+                            <InputNumber min={1} max={10} step={1} value={trendMinutes} onChange={(v) => setTrendMinutes(Math.max(1, Math.min(10, Math.floor(Number(v)))))} disabled={!trendEnabled} />
+                            <span style={{ color: '#ddd' }}>Stale(ms)</span>
+                            <InputNumber min={500} max={60000} step={250} value={staleMsThreshold} onChange={(v) => setStaleMsThreshold(Math.max(500, Math.min(60000, Math.floor(Number(v)))))} />
+                        </>
+                    )}
                     <Checkbox checked={stoplossEnabled} onChange={(e) => setStoplossEnabled(e.target.checked)}>Stoploss</Checkbox>
                     <span style={{ color: '#ddd' }}>Cut1 -c</span>
                     <InputNumber min={0} max={50} step={1} value={stoplossCut1DropCents} onChange={(v) => setStoplossCut1DropCents(Math.max(0, Math.min(50, Math.floor(Number(v)))))} />
@@ -2172,7 +2517,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                         Confirm
                     </Button>
                     <Button onClick={onStartWatchdog} loading={watchdogStartLoading} disabled={watchdog?.running === true}>
-                        {watchdog?.running ? 'Watchdog: ON' : 'Start Watchdog'}
+                        {watchdog == null ? 'Watchdog: ...' : watchdog?.running ? 'Watchdog: ON' : 'Start Watchdog'}
                     </Button>
                     <Tooltip title={watchdog?.running !== true ? '請先啟動 Watchdog' : status?.enabled ? 'Auto 已啟動' : String(status?.lastError || '').startsWith('books_stale:') ? '目前 books_stale 超過門檻；可能影響候選/落單。請等快照更新或調高門檻。' : undefined}>
                         <Button type="primary" icon={<PlayCircleOutlined />} onClick={onStart} loading={startLoading} disabled={!!status?.enabled || watchdog?.running !== true}>
@@ -2256,7 +2601,7 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                 <Alert
                     style={{ marginTop: 12 }}
                     type="info"
-                    message={`WS: ${wsConnected ? 'ON' : 'OFF'} • WS Last: ${wsLastAt || '-'} • Key: ${status?.hasValidKey ? 'OK' : 'MISSING'} • Watchdog: ${watchdog?.running ? 'ON' : 'OFF'} • Auto: ${status?.enabled ? 'ON' : 'OFF'} • LastScanAt: ${status?.lastScanAt || '-'} • Tracked: ${trackedCount != null ? trackedCount : '-'} • Candidates: ${candidatesMeta?.eligible ?? '-'} eligible / ${candidatesMeta?.count ?? '-'} total • CandOK: ${candidatesLastOkAt ? String(candidatesLastOkAt).replace('T', ' ').replace('Z', '') : '-'} • CandMs: ${candidatesLastDurationMs != null ? String(Math.max(0, Math.floor(Number(candidatesLastDurationMs)))) : '-'} • CandErr: ${candidatesLastError ? String(candidatesLastError).slice(0, 40) : '-'} • HistOK: ${historyLastOkAt ? String(historyLastOkAt).replace('T', ' ').replace('Z', '') : '-'} • HistMs: ${historyLastDurationMs != null ? String(Math.max(0, Math.floor(Number(historyLastDurationMs)))) : '-'} • HistErr: ${historyLastError ? String(historyLastError).slice(0, 40) : '-'} • S/E: ${statusLastError ? 'S!' : 'S✓'}${watchdogLastError ? ' W!' : ' W✓'}`}
+                    message={`WS: ${wsConnected ? 'ON' : 'OFF'} • WS Last: ${wsLastAt || '-'} • Key: ${status?.hasValidKey ? 'OK' : 'MISSING'} • Watchdog: ${watchdog == null ? '...' : watchdog?.running ? 'ON' : 'OFF'} • Auto: ${status?.enabled ? 'ON' : 'OFF'} • LastScanAt: ${status?.lastScanAt || '-'} • Tracked: ${trackedCount != null ? trackedCount : '-'} • Candidates: ${candidatesMeta?.eligible ?? '-'} eligible / ${candidatesMeta?.count ?? '-'} total • CandOK: ${candidatesLastOkAt ? String(candidatesLastOkAt).replace('T', ' ').replace('Z', '') : '-'} • CandMs: ${candidatesLastDurationMs != null ? String(Math.max(0, Math.floor(Number(candidatesLastDurationMs)))) : '-'} • CandErr: ${candidatesLastError ? String(candidatesLastError).slice(0, 40) : '-'} • HistOK: ${historyLastOkAt ? String(historyLastOkAt).replace('T', ' ').replace('Z', '') : '-'} • HistMs: ${historyLastDurationMs != null ? String(Math.max(0, Math.floor(Number(historyLastDurationMs)))) : '-'} • HistErr: ${historyLastError ? String(historyLastError).slice(0, 40) : '-'} • S/E: ${statusLastError ? 'S!' : 'S✓'}${watchdogLastError ? ' W!' : ' W✓'}`}
                     showIcon
                 />
                 {variant === 'all' && cryptoAllTfCountsText ? (
@@ -2916,6 +3261,102 @@ function Crypto15m(props: { variant?: 'crypto15m' | 'all'; title?: string; setti
                     scroll={{ x: 1600, y: 520 }}
                 />
             </Card>
+
+            <Modal
+                open={allRiskPopupOpen}
+                onCancel={() => setAllRiskPopupOpen(false)}
+                confirmLoading={allRiskSaving}
+                onOk={async () => {
+                    setAllRiskSaving(true);
+                    try {
+                        if (variant === 'all') {
+                            await apiPost('save_cryptoall_risk_cfg', '/group-arb/cryptoall/config', {
+                                dojiGuardEnabled: allDojiGuardEnabled,
+                                riskSkipScore: allRiskSkipScore,
+                                riskAddOnBlockScore: allRiskAddOnBlockScore,
+                                addOnTrendEnabled: allAddOnTrendEnabled,
+                                addOnTrendMinutesA: allAddOnTrendMinutesA,
+                                addOnTrendMinutesB: allAddOnTrendMinutesB,
+                                addOnTrendMinutesC: allAddOnTrendMinutesC,
+                            });
+                        } else if (apiNamespace === 'crypto15m2') {
+                            await apiPost('save_crypto15m2_risk_cfg', `${apiBase}/config`, {
+                                timeframes: (m2Timeframes && m2Timeframes.length ? m2Timeframes : ['15m', '5m']),
+                                dojiGuardEnabled: allDojiGuardEnabled,
+                                riskSkipScore: allRiskSkipScore,
+                            });
+                        }
+                        await fetchStatus();
+                        setAllRiskPopupOpen(false);
+                    } finally {
+                        setAllRiskSaving(false);
+                    }
+                }}
+                width={720}
+                title={variant === 'all' ? 'Doji / Trend / Risk' : 'Doji / Risk / TF'}
+            >
+                <Space direction="vertical" style={{ width: '100%' }} size={12}>
+                    <Card size="small" title="Doji / Risk">
+                        <Space wrap>
+                            <Checkbox checked={allDojiGuardEnabled} onChange={(e) => setAllDojiGuardEnabled(e.target.checked)}>Doji Guard</Checkbox>
+                            <span style={{ color: '#ddd' }}>RiskSkip</span>
+                            <InputNumber min={0} max={100} step={1} value={allRiskSkipScore} onChange={(v) => setAllRiskSkipScore(Math.max(0, Math.min(100, Math.floor(Number(v)))))} />
+                            {variant === 'all' ? (
+                                <>
+                                    <span style={{ color: '#ddd' }}>AddOnBlock</span>
+                                    <InputNumber min={0} max={100} step={1} value={allRiskAddOnBlockScore} onChange={(v) => setAllRiskAddOnBlockScore(Math.max(0, Math.min(100, Math.floor(Number(v)))))} />
+                                    <Button size="small" onClick={() => {
+                                        const cfg: any = status?.config || {};
+                                        if (cfg.dojiGuardEnabled != null) setAllDojiGuardEnabled(!!cfg.dojiGuardEnabled);
+                                        if (cfg.riskSkipScore != null) setAllRiskSkipScore(Number(cfg.riskSkipScore));
+                                        if (cfg.dojiGuard?.riskAddOnBlockScore != null) setAllRiskAddOnBlockScore(Number(cfg.dojiGuard.riskAddOnBlockScore));
+                                        if (cfg.addOn?.trendEnabled != null) setAllAddOnTrendEnabled(!!cfg.addOn.trendEnabled);
+                                        if (cfg.addOn?.trendMinutesA != null) setAllAddOnTrendMinutesA(Number(cfg.addOn.trendMinutesA));
+                                        if (cfg.addOn?.trendMinutesB != null) setAllAddOnTrendMinutesB(Number(cfg.addOn.trendMinutesB));
+                                        if (cfg.addOn?.trendMinutesC != null) setAllAddOnTrendMinutesC(Number(cfg.addOn.trendMinutesC));
+                                    }} disabled={!status?.config}>
+                                        Load
+                                    </Button>
+                                </>
+                            ) : null}
+                            {apiNamespace === 'crypto15m2' ? (
+                                <>
+                                    <span style={{ color: '#ddd' }}>TF</span>
+                                    <Checkbox checked={m2Timeframes.includes('15m')} onChange={(e) => {
+                                        const on = e.target.checked;
+                                        setM2Timeframes((prev) => {
+                                            const set = new Set(prev);
+                                            if (on) set.add('15m'); else set.delete('15m');
+                                            return Array.from(set) as any;
+                                        });
+                                    }}>15m</Checkbox>
+                                    <Checkbox checked={m2Timeframes.includes('5m')} onChange={(e) => {
+                                        const on = e.target.checked;
+                                        setM2Timeframes((prev) => {
+                                            const set = new Set(prev);
+                                            if (on) set.add('5m'); else set.delete('5m');
+                                            return Array.from(set) as any;
+                                        });
+                                    }}>5m</Checkbox>
+                                </>
+                            ) : null}
+                        </Space>
+                    </Card>
+                    {variant === 'all' ? (
+                        <Card size="small" title="Trend Add-on">
+                            <Space wrap>
+                                <Checkbox checked={allAddOnTrendEnabled} onChange={(e) => setAllAddOnTrendEnabled(e.target.checked)}>Enabled</Checkbox>
+                                <span style={{ color: '#ddd' }}>A(min)</span>
+                                <InputNumber min={1} max={60} step={1} value={allAddOnTrendMinutesA} onChange={(v) => setAllAddOnTrendMinutesA(Math.max(1, Math.min(60, Math.floor(Number(v)))))} disabled={!allAddOnTrendEnabled} />
+                                <span style={{ color: '#ddd' }}>B(min)</span>
+                                <InputNumber min={1} max={60} step={1} value={allAddOnTrendMinutesB} onChange={(v) => setAllAddOnTrendMinutesB(Math.max(1, Math.min(60, Math.floor(Number(v)))))} disabled={!allAddOnTrendEnabled} />
+                                <span style={{ color: '#ddd' }}>C(min)</span>
+                                <InputNumber min={1} max={60} step={1} value={allAddOnTrendMinutesC} onChange={(v) => setAllAddOnTrendMinutesC(Math.max(1, Math.min(60, Math.floor(Number(v)))))} disabled={!allAddOnTrendEnabled} />
+                            </Space>
+                        </Card>
+                    ) : null}
+                </Space>
+            </Modal>
 
             <Modal
                 open={stoplossOpen}

@@ -1388,6 +1388,389 @@ export const groupArbRoutes: FastifyPluginAsync = async (fastify) => {
         }
     });
 
+    fastify.get('/crypto15m2/history', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Get crypto15m2 strategy history (investor view)',
+            querystring: {
+                type: 'object',
+                properties: {
+                    refresh: { type: 'boolean' },
+                    intervalMs: { type: 'number' },
+                    maxEntries: { type: 'number' }
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const q = request.query as any;
+                const r = await (scanner as any).getCrypto15m2History({
+                    refresh: String(q.refresh || '') === '1' || String(q.refresh || '') === 'true',
+                    intervalMs: q.intervalMs != null ? Number(q.intervalMs) : undefined,
+                    maxEntries: q.maxEntries != null ? Number(q.maxEntries) : undefined,
+                });
+                return r;
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.get('/crypto15m2/replay/:id', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Get crypto15m2 execution replay (orderbook before/after + order result)',
+            params: {
+                type: 'object',
+                properties: {
+                    id: { type: 'string' }
+                },
+                required: ['id']
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const p = (request.params || {}) as any;
+                const id = String(p.id || '').trim();
+                const r = await (scanner as any).getCrypto15m2Replay(id);
+                return r;
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.get('/crypto15m2/diag', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Diagnose crypto15m2 CLOB connectivity (dns/markets/books)',
+        },
+        handler: async (_request, reply) => {
+            try {
+                const r = await (scanner as any).getCrypto15mDiag();
+                return r;
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.get('/crypto15m2/candidates', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'List 15m crypto candidates (Up/Down, >= minProb, expiring soon) [crypto15m2]',
+            querystring: {
+                type: 'object',
+                properties: {
+                    minProb: { type: 'number' },
+                    expiresWithinSec: { type: 'number' },
+                    limit: { type: 'number' },
+                    timeframes: { type: 'string' }
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const q = request.query as any;
+                const r = await (scanner as any).getCrypto15m2Candidates({
+                    minProb: q.minProb != null ? Number(q.minProb) : undefined,
+                    expiresWithinSec: q.expiresWithinSec != null ? Number(q.expiresWithinSec) : undefined,
+                    limit: q.limit != null ? Number(q.limit) : undefined,
+                    timeframes: q.timeframes != null ? String(q.timeframes) : undefined,
+                });
+                return r;
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.get('/crypto15m2/status', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Get 15m crypto auto trade status [crypto15m2]',
+        },
+        handler: async (_request, reply) => {
+            try {
+                const status = (scanner as any).getCrypto15m2Status();
+                return { success: true, status };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.get('/crypto15m2/delta-thresholds', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Get crypto15m2 min delta thresholds (BTC/ETH/SOL/XRP)',
+        },
+        handler: async (_request, reply) => {
+            try {
+                const thresholds = (scanner as any).getCrypto15m2DeltaThresholds();
+                return { success: true, thresholds };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.post('/crypto15m2/delta-thresholds', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Update crypto15m2 min delta thresholds (persisted)',
+            body: {
+                type: 'object',
+                properties: {
+                    btcMinDelta: { type: 'number' },
+                    ethMinDelta: { type: 'number' },
+                    solMinDelta: { type: 'number' },
+                    xrpMinDelta: { type: 'number' },
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const b = (request.body || {}) as any;
+                const thresholds = (scanner as any).setCrypto15m2DeltaThresholds({
+                    btcMinDelta: b.btcMinDelta != null ? Number(b.btcMinDelta) : undefined,
+                    ethMinDelta: b.ethMinDelta != null ? Number(b.ethMinDelta) : undefined,
+                    solMinDelta: b.solMinDelta != null ? Number(b.solMinDelta) : undefined,
+                    xrpMinDelta: b.xrpMinDelta != null ? Number(b.xrpMinDelta) : undefined,
+                    persist: true,
+                });
+                return { success: true, thresholds };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.post('/crypto15m2/config', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Persist crypto15m2 settings (no auto start/stop)',
+            body: {
+                type: 'object',
+                properties: {
+                    timeframes: { type: 'array', items: { type: 'string' } },
+                    amountUsd: { type: 'number' },
+                    minProb: { type: 'number' },
+                    expiresWithinSec: { type: 'number' },
+                    expiresWithinSecByTimeframe: { type: 'object', additionalProperties: true },
+                    pollMs: { type: 'number' },
+                    buySizingMode: { type: 'string' },
+                    sweepEnabled: { type: 'boolean' },
+                    sweepWindowSec: { type: 'number' },
+                    sweepMaxOrdersPerMarket: { type: 'number' },
+                    sweepMaxTotalUsdPerMarket: { type: 'number' },
+                    sweepMinIntervalMs: { type: 'number' },
+                    trendEnabled: { type: 'boolean' },
+                    trendMinutes: { type: 'number' },
+                    staleMsThreshold: { type: 'number' },
+                    stoplossEnabled: { type: 'boolean' },
+                    stoplossCut1DropCents: { type: 'number' },
+                    stoplossCut1SellPct: { type: 'number' },
+                    stoplossCut2DropCents: { type: 'number' },
+                    stoplossCut2SellPct: { type: 'number' },
+                    stoplossMinSecToExit: { type: 'number' },
+                    adaptiveDeltaEnabled: { type: 'boolean' },
+                    adaptiveDeltaBigMoveMultiplier: { type: 'number' },
+                    adaptiveDeltaRevertNoBuyCount: { type: 'number' },
+                    dojiGuardEnabled: { type: 'boolean' },
+                    riskSkipScore: { type: 'number' },
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const b = (request.body || {}) as any;
+                const status = (scanner as any).updateCrypto15m2Config({
+                    timeframes: b.timeframes != null ? b.timeframes : undefined,
+                    amountUsd: b.amountUsd != null ? Number(b.amountUsd) : undefined,
+                    minProb: b.minProb != null ? Number(b.minProb) : undefined,
+                    expiresWithinSec: b.expiresWithinSec != null ? Number(b.expiresWithinSec) : undefined,
+                    expiresWithinSecByTimeframe: b.expiresWithinSecByTimeframe != null ? b.expiresWithinSecByTimeframe : undefined,
+                    pollMs: b.pollMs != null ? Number(b.pollMs) : undefined,
+                    buySizingMode: b.buySizingMode != null ? String(b.buySizingMode) : undefined,
+                    sweepEnabled: b.sweepEnabled != null ? !!b.sweepEnabled : undefined,
+                    sweepWindowSec: b.sweepWindowSec != null ? Number(b.sweepWindowSec) : undefined,
+                    sweepMaxOrdersPerMarket: b.sweepMaxOrdersPerMarket != null ? Number(b.sweepMaxOrdersPerMarket) : undefined,
+                    sweepMaxTotalUsdPerMarket: b.sweepMaxTotalUsdPerMarket != null ? Number(b.sweepMaxTotalUsdPerMarket) : undefined,
+                    sweepMinIntervalMs: b.sweepMinIntervalMs != null ? Number(b.sweepMinIntervalMs) : undefined,
+                    trendEnabled: b.trendEnabled != null ? !!b.trendEnabled : undefined,
+                    trendMinutes: b.trendMinutes != null ? Number(b.trendMinutes) : undefined,
+                    staleMsThreshold: b.staleMsThreshold != null ? Number(b.staleMsThreshold) : undefined,
+                    stoplossEnabled: b.stoplossEnabled != null ? !!b.stoplossEnabled : undefined,
+                    stoplossCut1DropCents: b.stoplossCut1DropCents != null ? Number(b.stoplossCut1DropCents) : undefined,
+                    stoplossCut1SellPct: b.stoplossCut1SellPct != null ? Number(b.stoplossCut1SellPct) : undefined,
+                    stoplossCut2DropCents: b.stoplossCut2DropCents != null ? Number(b.stoplossCut2DropCents) : undefined,
+                    stoplossCut2SellPct: b.stoplossCut2SellPct != null ? Number(b.stoplossCut2SellPct) : undefined,
+                    stoplossMinSecToExit: b.stoplossMinSecToExit != null ? Number(b.stoplossMinSecToExit) : undefined,
+                    adaptiveDeltaEnabled: b.adaptiveDeltaEnabled != null ? !!b.adaptiveDeltaEnabled : undefined,
+                    adaptiveDeltaBigMoveMultiplier: b.adaptiveDeltaBigMoveMultiplier != null ? Number(b.adaptiveDeltaBigMoveMultiplier) : undefined,
+                    adaptiveDeltaRevertNoBuyCount: b.adaptiveDeltaRevertNoBuyCount != null ? Number(b.adaptiveDeltaRevertNoBuyCount) : undefined,
+                    dojiGuardEnabled: b.dojiGuardEnabled != null ? !!b.dojiGuardEnabled : undefined,
+                    riskSkipScore: b.riskSkipScore != null ? Number(b.riskSkipScore) : undefined,
+                });
+                return { success: true, status };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.get('/crypto15m2/ws', {
+        websocket: true,
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Crypto15m2 realtime snapshot feed (websocket)',
+            querystring: {
+                type: 'object',
+                properties: {
+                    minProb: { type: 'number' },
+                    expiresWithinSec: { type: 'number' },
+                    limit: { type: 'number' },
+                    timeframes: { type: 'string' }
+                }
+            }
+        },
+    }, async (connection: any, request) => {
+        const sock = (connection as any)?.socket ?? connection;
+        const q = (request.query || {}) as any;
+        (scanner as any).addCrypto15m2WsClient(sock, {
+            minProb: q.minProb != null ? Number(q.minProb) : undefined,
+            expiresWithinSec: q.expiresWithinSec != null ? Number(q.expiresWithinSec) : undefined,
+            limit: q.limit != null ? Number(q.limit) : undefined,
+            timeframes: q.timeframes != null ? String(q.timeframes) : undefined,
+        });
+        sock.on('close', () => {
+            try { (scanner as any).removeCrypto15m2WsClient(sock); } catch {}
+        });
+    });
+
+    fastify.post('/crypto15m2/auto/start', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Start 15m crypto auto trade [crypto15m2]',
+            body: {
+                type: 'object',
+                properties: {
+                    dryRun: { type: 'boolean' },
+                    timeframes: { type: 'array', items: { type: 'string' } },
+                    amountUsd: { type: 'number' },
+                    minProb: { type: 'number' },
+                    expiresWithinSec: { type: 'number' },
+                    expiresWithinSecByTimeframe: { type: 'object', additionalProperties: true },
+                    pollMs: { type: 'number' },
+                    buySizingMode: { type: 'string' },
+                    sweepEnabled: { type: 'boolean' },
+                    sweepWindowSec: { type: 'number' },
+                    sweepMaxOrdersPerMarket: { type: 'number' },
+                    sweepMaxTotalUsdPerMarket: { type: 'number' },
+                    sweepMinIntervalMs: { type: 'number' },
+                    trendEnabled: { type: 'boolean' },
+                    trendMinutes: { type: 'number' },
+                    staleMsThreshold: { type: 'number' },
+                    stoplossEnabled: { type: 'boolean' },
+                    stoplossCut1DropCents: { type: 'number' },
+                    stoplossCut1SellPct: { type: 'number' },
+                    stoplossCut2DropCents: { type: 'number' },
+                    stoplossCut2SellPct: { type: 'number' },
+                    stoplossMinSecToExit: { type: 'number' },
+                    adaptiveDeltaEnabled: { type: 'boolean' },
+                    adaptiveDeltaBigMoveMultiplier: { type: 'number' },
+                    adaptiveDeltaRevertNoBuyCount: { type: 'number' },
+                    dojiGuardEnabled: { type: 'boolean' },
+                    riskSkipScore: { type: 'number' },
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const b = (request.body || {}) as any;
+                const status = (scanner as any).startCrypto15m2Auto({
+                    enabled: true,
+                    dryRun: b.dryRun != null ? !!b.dryRun : undefined,
+                    timeframes: b.timeframes != null ? b.timeframes : undefined,
+                    amountUsd: b.amountUsd != null ? Number(b.amountUsd) : undefined,
+                    minProb: b.minProb != null ? Number(b.minProb) : undefined,
+                    expiresWithinSec: b.expiresWithinSec != null ? Number(b.expiresWithinSec) : undefined,
+                    expiresWithinSecByTimeframe: b.expiresWithinSecByTimeframe != null ? b.expiresWithinSecByTimeframe : undefined,
+                    pollMs: b.pollMs != null ? Number(b.pollMs) : undefined,
+                    buySizingMode: b.buySizingMode != null ? String(b.buySizingMode) : undefined,
+                    sweepEnabled: b.sweepEnabled != null ? !!b.sweepEnabled : undefined,
+                    sweepWindowSec: b.sweepWindowSec != null ? Number(b.sweepWindowSec) : undefined,
+                    sweepMaxOrdersPerMarket: b.sweepMaxOrdersPerMarket != null ? Number(b.sweepMaxOrdersPerMarket) : undefined,
+                    sweepMaxTotalUsdPerMarket: b.sweepMaxTotalUsdPerMarket != null ? Number(b.sweepMaxTotalUsdPerMarket) : undefined,
+                    sweepMinIntervalMs: b.sweepMinIntervalMs != null ? Number(b.sweepMinIntervalMs) : undefined,
+                    staleMsThreshold: b.staleMsThreshold != null ? Number(b.staleMsThreshold) : undefined,
+                    stoplossEnabled: b.stoplossEnabled != null ? !!b.stoplossEnabled : undefined,
+                    stoplossCut1DropCents: b.stoplossCut1DropCents != null ? Number(b.stoplossCut1DropCents) : undefined,
+                    stoplossCut1SellPct: b.stoplossCut1SellPct != null ? Number(b.stoplossCut1SellPct) : undefined,
+                    stoplossCut2DropCents: b.stoplossCut2DropCents != null ? Number(b.stoplossCut2DropCents) : undefined,
+                    stoplossCut2SellPct: b.stoplossCut2SellPct != null ? Number(b.stoplossCut2SellPct) : undefined,
+                    stoplossMinSecToExit: b.stoplossMinSecToExit != null ? Number(b.stoplossMinSecToExit) : undefined,
+                    adaptiveDeltaEnabled: b.adaptiveDeltaEnabled != null ? !!b.adaptiveDeltaEnabled : undefined,
+                    adaptiveDeltaBigMoveMultiplier: b.adaptiveDeltaBigMoveMultiplier != null ? Number(b.adaptiveDeltaBigMoveMultiplier) : undefined,
+                    adaptiveDeltaRevertNoBuyCount: b.adaptiveDeltaRevertNoBuyCount != null ? Number(b.adaptiveDeltaRevertNoBuyCount) : undefined,
+                    trendEnabled: b.trendEnabled != null ? !!b.trendEnabled : undefined,
+                    trendMinutes: b.trendMinutes != null ? Number(b.trendMinutes) : undefined,
+                    dojiGuardEnabled: b.dojiGuardEnabled != null ? !!b.dojiGuardEnabled : undefined,
+                    riskSkipScore: b.riskSkipScore != null ? Number(b.riskSkipScore) : undefined,
+                });
+                return { success: true, status };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.post('/crypto15m2/auto/run-once', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Run 15m crypto auto trade once (supports dryRun) [crypto15m2]',
+            body: {
+                type: 'object',
+                properties: {
+                    dryRun: { type: 'boolean' },
+                    minProb: { type: 'number' },
+                    expiresWithinSec: { type: 'number' },
+                    amountUsd: { type: 'number' },
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const b = (request.body || {}) as any;
+                const res = await (scanner as any).runCrypto15m2AutoOnce({
+                    dryRun: b.dryRun === true,
+                    minProb: b.minProb != null ? Number(b.minProb) : undefined,
+                    expiresWithinSec: b.expiresWithinSec != null ? Number(b.expiresWithinSec) : undefined,
+                    amountUsd: b.amountUsd != null ? Number(b.amountUsd) : undefined,
+                });
+                return { success: true, result: res };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.post('/crypto15m2/auto/stop', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Stop 15m crypto auto trade [crypto15m2]',
+        },
+        handler: async (_request, reply) => {
+            try {
+                const status = (scanner as any).stopCrypto15m2Auto();
+                return { success: true, status };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
     fastify.get('/crypto15m-hedge/status', {
         schema: {
             tags: ['Group Arb'],

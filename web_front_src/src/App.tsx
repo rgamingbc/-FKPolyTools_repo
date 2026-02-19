@@ -12,8 +12,7 @@ import WatchedWhales from './pages/WatchedWhales';
 import Advanced from './pages/Advanced'; // Advanced Strategy
 import Crypto15m from './pages/Crypto15m';
 import Crypto15mHedge from './pages/Crypto15mHedge';
-import Crypto15mAll from './pages/Crypto15mAll';
-import CryptoAll from './pages/CryptoAll';
+import Crypto15m2 from './pages/Crypto15m2';
 import CryptoAll2 from './pages/CryptoAll2';
 import FollowActivity from './pages/FollowActivity';
 import { AccountProvider } from './account/AccountContext';
@@ -40,9 +39,10 @@ function App() {
                                 <Route path="/watched-whales" element={<WatchedWhales />} />
                                 <Route path="/advanced" element={<Advanced />} />
                                 <Route path="/crypto-15m" element={<Crypto15m />} />
+                                <Route path="/crypto-15m-2" element={<Crypto15m2 />} />
                                 <Route path="/crypto-15m-hedge" element={<Crypto15mHedge />} />
-                                <Route path="/crypto-15m-all" element={<Crypto15mAll />} />
-                                <Route path="/crypto-all" element={<CryptoAll />} />
+                                <Route path="/crypto-15m-all" element={<Navigate to="/crypto-15m" replace />} />
+                                <Route path="/crypto-all" element={<Navigate to="/crypto-all2" replace />} />
                                 <Route path="/crypto-all2" element={<CryptoAll2 />} />
                                 <Route path="/follow-activity" element={<FollowActivity />} />
                             </Routes>

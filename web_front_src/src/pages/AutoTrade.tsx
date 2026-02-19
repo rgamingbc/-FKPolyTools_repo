@@ -1,21 +1,34 @@
-import { useEffect, useState } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import { Alert, Button, Card, Descriptions, Tag } from 'antd';
 import api from '../api/client';
+import { AccountContext } from '../account/AccountContext';
 
 export default function AutoTrade() {
-    const [enabled, setEnabled] = useState(() => {
-        try {
-            return localStorage.getItem('auto_trade_enabled') === 'true';
-        } catch {
-            return false;
-        }
-    });
+    const { activeAccountId } = useContext(AccountContext);
+    const scope = String(activeAccountId || 'default').trim() || 'default';
+    const enabledKey = `auto_trade_enabled:${scope}`;
+    const [enabled, setEnabled] = useState(false);
     const [status, setStatus] = useState<any>(null);
+    useEffect(() => {
+        setEnabled(false);
+        try {
+            const legacyKey = 'auto_trade_enabled';
+            const raw = localStorage.getItem(enabledKey);
+            const legacy = localStorage.getItem(legacyKey);
+            const next = raw != null ? raw : legacy;
+            if (!raw && legacy) {
+                try { localStorage.setItem(enabledKey, legacy); } catch {}
+            }
+            setEnabled(String(next || '').trim() === 'true');
+        } catch {
+            setEnabled(false);
+        }
+    }, [enabledKey]);
 
     const toggle = (v: boolean) => {
         setEnabled(v);
         try {
-            localStorage.setItem('auto_trade_enabled', v ? 'true' : 'false');
+            localStorage.setItem(enabledKey, v ? 'true' : 'false');
         } catch {
         }
     };

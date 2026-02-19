@@ -6,20 +6,6 @@
 - 前端（Vite / React）：`FKPolyTools_Repo/web_front_src`
 - 預設 Port：API = 3001、Web = 5173
 
-## 常用頁面（本地）
-
-- Dashboard：`http://localhost:5173/`
-- 15M Crypto：`http://localhost:5173/crypto-15m`
-- 15M Crypto 2：`http://localhost:5173/crypto-15m-2`
-- Crypto All：`http://localhost:5173/crypto-all`
-- Crypto All 2：`http://localhost:5173/crypto-all-2`
-
-## 注意事項（重要）
-
-- `.env` / 私鑰 / relayer keys 唔可以入 git，必須只留喺機器本地（或加密備份）。
-- runtime 落盤檔案建議固定放喺同一個 persistent directory（雲端一般係 `/var/lib/polymarket-tools`）；換機/重裝要跟 [BACKUP-RESTORE.md](file:///Users/user/Documents/trae_projects/polymarket/static/FKPolyTools_Repo/docs/BACKUP-RESTORE.md) 還原。
-- Auto-redeem（Claim）需要 relayer 正常；如自動 claim 冇反應，先睇 `/api/group-arb/auto-redeem/status` 嘅 `lastError`。
-
 ## 從 Git 取得 / 更新
 
 ### 更新（既有機器）
@@ -91,9 +77,6 @@ npm run dev
 
 ```bash
 curl -sS http://localhost:3001/api/group-arb/setup/status | head
-curl -sS http://localhost:3001/api/group-arb/crypto15m/status | head
-curl -sS http://localhost:3001/api/group-arb/crypto15m2/status | head
-curl -sS http://localhost:3001/api/group-arb/crypto15m2/diag | head
 curl -sS http://localhost:3001/api/group-arb/cryptoall/status | head
 curl -sS http://localhost:3001/api/group-arb/cryptoall2/status | head
 ```
