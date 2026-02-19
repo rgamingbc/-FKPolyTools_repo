@@ -1,16 +1,17 @@
-import { Layout, Select, Space, Typography } from 'antd';
+import { Layout, Select, Space, Typography, Tooltip } from 'antd';
 import { LineChartOutlined } from '@ant-design/icons';
 import { useContext, useEffect, useMemo, useState } from 'react';
 import api from '../api/client';
 import { AccountContext } from '../account/AccountContext';
 
 const { Header } = Layout;
-const { Title } = Typography;
+const { Title, Text } = Typography;
 
 function AppHeader() {
     const { activeAccountId, setActiveAccountId } = useContext(AccountContext);
     const [accounts, setAccounts] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
+    const [stateDir, setStateDir] = useState<string>('');
 
     useEffect(() => {
         let mounted = true;
@@ -20,8 +21,11 @@ function AppHeader() {
                 const res = await api.get('/accounts');
                 const list = Array.isArray(res.data?.accounts) ? res.data.accounts : [];
                 if (mounted) setAccounts(list);
+                const dir = res.data?.stateDir != null ? String(res.data.stateDir) : '';
+                if (mounted) setStateDir(dir);
             } catch {
                 if (mounted) setAccounts([]);
+                if (mounted) setStateDir('');
             } finally {
                 if (mounted) setLoading(false);
             }
@@ -34,13 +38,21 @@ function AppHeader() {
 
     const options = useMemo(() => {
         const list = Array.isArray(accounts) ? accounts : [];
-        return list.map((a: any) => {
+        const items = list.map((a: any) => {
             const id = String(a?.id || '').trim() || 'default';
             const name = String(a?.name || id);
             const funder = String(a?.status?.funderAddress || '');
             const label = funder ? `${name} (${funder.slice(0, 6)}…${funder.slice(-4)})` : name;
             return { value: id, label };
         });
+        // Always ensure 'default' and 'simulation' exist
+        if (!items.find(x => x.value === 'default')) {
+            items.unshift({ value: 'default', label: 'Default Account (Real)' });
+        }
+        if (!items.find(x => x.value === 'simulation')) {
+            items.push({ value: 'simulation', label: 'Simulation Account (Mock)' });
+        }
+        return items;
     }, [accounts]);
 
     return (
@@ -57,6 +69,13 @@ function AppHeader() {
             <Title level={4} style={{ margin: 0, color: '#fff' }}>
                 FK Polymarket Tools
             </Title>
+            {stateDir ? (
+                <Tooltip title={stateDir}>
+                    <Text style={{ color: '#888', marginLeft: 12, maxWidth: 420 }} ellipsis>
+                        {stateDir}
+                    </Text>
+                </Tooltip>
+            ) : null}
             <div style={{ flex: 1 }} />
             <Space>
                 <Select

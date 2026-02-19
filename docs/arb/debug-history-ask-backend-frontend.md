@@ -1,89 +1,116 @@
-# DEBUG / HISTORY / ASK（Backend vs Frontend）永遠提醒（唔好再錯）
+# DEBUG / HISTORY / ASK（Backend vs Frontend）— 只用 15M / 15M2（唔好再用 CryptoAll 推論）
 
-呢份文檔係針對 `http://localhost:5173/crypto-15m-all` 呢類頁面，長期避免重覆犯錯：UI 顯示 rows=0、no-asks、history 空，但 backend 其實有/冇資料。
+呢份文檔係針對：
+- 15M Crypto：`http://localhost:5173/crypto-15m`
+- 15M Crypto 2：`http://localhost:5173/crypto-15m-2`
 
-## 一句講清楚（最常見成因）
-- **UI rows=0 唔等於 backend 冇資料**：好多時係 React Table `rowKey` 撞 key / null key，或者前端用咗「signature 去重」導致 state 唔更新。
-- **no-asks 唔等於 market 冇 ask**：通常係 backend 只 refresh 咗少量 candidates（例如 limit=5），UI 展示嘅其餘 rows 冇 orderbook snapshot，所以顯示 no-asks / 0.0c。
-- **summary 有數但 history 空**：一定要分清係 backend 回傳就係咁，定係 frontend merge/filter/render 出事。
+目的：當 UI 顯示 rows=0、no-asks、history 空，但你懷疑 backend 其實有/冇資料時，用一套固定流程快速釘死「backend 問題」定「frontend render/state 問題」。
+
+## 核心規則（永遠唔好再錯）
+- **Debug 15M / 15M2 時，唔可以用 CryptoAll / CryptoAll2 嘅 setting/state 去推論**：CryptoAll 有 multi-TF、獨立 snapshot loop，同 crypto15m2 行為唔同，會造成錯誤結論。
+- **先驗 backend JSON，再驗 UI**：backend 回傳係真相；UI 可能被去重、key、filter、WS/port 影響而「睇落似冇」。
 
 ---
 
 ## 1) Backend 應該點驗證（唔好靠 UI 猜）
 
-### History（15m / all）
-用以下 endpoint 直接睇 backend JSON（Vite 會 proxy `/api` 去 API port；默認係 3001）：
-- `/api/group-arb/crypto15m/history?refresh=true&intervalMs=1000&maxEntries=50`
-- `/api/group-arb/cryptoall/history?refresh=true&intervalMs=1000&maxEntries=50`
+Vite 會 proxy `/api` 去 API port（預設 3001），以下 endpoint 都可以直接用 browser 開或 curl。
+
+### A. Status（先睇 config 係咪你以為嗰套）
+- crypto15m：`/api/group-arb/crypto15m/status`
+- crypto15m2：`/api/group-arb/crypto15m2/status`
 
 你要睇嘅重點：
-- `history`：Array，長度應該 <= `maxEntries`
-- `summary.count`：有幾多 bets（通常應該同 `history` 大概一致；除非 summary 係全量、history 係截斷）
-- `historyPersist.lastError`：如有，代表落盤/讀盤有錯（state dir 或 JSON 壞）
+- `status.enabled / dryRun`
+- `status.config`：
+  - 15M：`expiresWithinSec`
+  - 15M2：`expiresWithinSec` + `expiresWithinSecByTimeframe`（`5m/15m`）
+- `status.lastError`：如有，代表 loop/下單/抓資料有實際錯誤
 
-### Candidates + Ask（orderbook snapshot）
-UI 嘅 candidates 來源一般係：
-- `/api/group-arb/cryptoall/candidates?...&limit=XX`
-- `/api/group-arb/crypto15m/candidates?...&limit=XX`
+### B. Candidates（釘死 rows=0 / no-asks）
+- crypto15m：`/api/group-arb/crypto15m/candidates?minProb=0.9&expiresWithinSec=180&limit=30`
+- crypto15m2（可分 TF）：`/api/group-arb/crypto15m2/candidates?timeframes=5m,15m&minProb=0.9&expiresWithinSec=180&limit=30`
+
+你要睇嘅重點（每條 row）：
+- `eligibleByExpiry / meetsMinProb`
+- `reason`（例如 `no-asks`、`books_backoff`、`price`）
+- `booksError / booksAttemptError`（有錯先處理 books/連線；唔好先改 UI）
+- `chosenPrice` / `prices` / `asksCount`（如果全部 null/0，多數係 books 未對上 tokenIds）
+- `snapshotAt / staleMs / booksStaleMs`（判斷係 stale 定係真冇資料）
+
+### C. Diag（釘死 CLOB /books 連線 / throttling）
+- crypto15m2：`/api/group-arb/crypto15m2/diag`
 
 你要睇嘅重點：
-- `candidates.length`：同 UI rows 應該一致（除非 UI 有 sticky/merge）
-- 每個 candidate 內嘅 `upPrice/downPrice`（或 bestAsk）係咪 null / 0
-- 有冇 `booksAttemptError` / `riskError` 類欄位（代表 backend fetch /books 失敗）
+- `booksGlobal.lastStatus / lastError / throttleBackoffMs / blockedUntilMs`
+- 如果 `blockedUntilMs>now` 或 `throttleBackoffMs>0`，就屬於被節流/封鎖，UI 自然會出現 stale/no-asks
 
-**重要 invariant（永遠唔好再破壞）**
-- 如果 UI 會展示 top 50 rows，backend 自動 refresh /books 就唔可以只做 top 5，否則 UI 其餘 rows 會長期 no-asks。
+### D. History（backend 有冇落盤、落盤有冇壞）
+- crypto15m：`/api/group-arb/crypto15m/history?refresh=true&intervalMs=1000&maxEntries=50`
+- crypto15m2：`/api/group-arb/crypto15m2/history?refresh=true&intervalMs=1000&maxEntries=50`
+
+你要睇嘅重點：
+- `history.length` 應該 <= `maxEntries`
+- `summary.count`（同 `history.length` 可能唔一樣，但唔應該明顯矛盾）
+- `historyPersist.lastError`（有就先修復落盤/檔案）
 
 ---
 
-## 2) Frontend 應該點「Mark DEBUG」同睇重點
+## 2) Frontend 應該點睇（先分清：收唔收到 data vs 渲染唔到）
 
-### Crypto15m All 頁面（UI）
 對應檔案：
 - 前端頁：[Crypto15m.tsx](file:///Users/user/Documents/trae_projects/polymarket/static/FKPolyTools_Repo/web_front_src/src/pages/Crypto15m.tsx)
+- 15M2 wrapper：[Crypto15m2.tsx](file:///Users/user/Documents/trae_projects/polymarket/static/FKPolyTools_Repo/web_front_src/src/pages/Crypto15m2.tsx)
 
-已加嘅 DEBUG 顯示（Tag）用途：
-- **Candidates 區**：`Debug: {candidates?.length}` → 直接顯示前端 state 收到幾多 rows
-- **History 區**：`H15 / HAll / Total` → 顯示 merge 後 state 內各策略 history 數量
+### A. 如果 backend candidates 有 rows，但 UI rows=0
+優先懷疑：
+- Table `rowKey` 有 null/undefined/重複（尤其係 merge/filter 後）
+- UI 有「signature 去重」導致 state 冇更新（但 WS/HTTP 其實有返資料）
 
-> 規則：**如果 DEBUG 數字 > 0，但 Table rows 仍然 0，99% 係 render/key/filter 問題；唔係 backend。**
+### B. 唔好用每秒變動欄位做全表 signature
+反例：
+- `secondsToExpire` 每秒變 → 會迫 UI 全表 re-render，仲會令「去重」同「更新」判斷變得不可靠
 
-### Table rowKey（最常見 rows=0 真兇）
-永遠要確保：
-- 每一行 **rowKey 唔可以 null / undefined**
-- 合併 view（All）入面，兩個來源可能 `id` 撞 / id=null，所以要有 `_ui_id` 或穩定 fallback key
+正解：
+- countdown 交畀 row component 自己 tick
+- table state 更新只跟 price/eligibility/id 等業務字段
 
 ---
 
-## 3) 「唔好再錯」清單（硬性規矩）
+## 3) Bulk Expire（15M2）點驗證係咪真係生效
 
-### A. 唔好用「每秒變動」欄位做 signature 去重
-反例：
-- `secondsToExpire` 每秒變 → 會迫 UI 全表 re-render（lag + RAM 飆）
+### A. 先睇 status config
+- `/api/group-arb/crypto15m2/status` 應該見到：`config.expiresWithinSecByTimeframe = { "5m": ..., "15m": ... }`
 
-正解：
-- countdown 交畀 row component 自己 tick（例如 CountdownTag）
-- 上層 table state 更新只跟「業務資料」變化（price/eligibility/ids）
-
-### B. Backend refresh 範圍要同 UI 展示一致
-反例：
-- backend auto loop 只 refresh top 5 books，但 UI 顯示 50 rows → 45 rows no-asks
-
-正解：
-- backend 用至少 `limit >= UI 展示上限`（或者 UI 應該顯示同 limit 一致）
-
-### C. 先確認「backend 真係有 history」先改 UI
-流程：
-1) 先打 `/api/group-arb/.../history` 睇 `history.length`
-2) 再睇 UI debug tag（Total / H15 / HAll）
-3) 兩邊一致，先處理 UI；唔一致，先處理 backend 或 proxy/port
+### B. 再睇 candidates 行為
+- 打：`/api/group-arb/crypto15m2/candidates?timeframes=5m,15m&minProb=0.0&expiresWithinSec=9999&limit=80`
+- 期望：
+  - 5m rows 用 `expiresWithinSecByTimeframe.5m` 判斷 `eligibleByExpiry`
+  - 15m rows 用 `expiresWithinSecByTimeframe.15m` 判斷 `eligibleByExpiry`
 
 ---
 
-## 4) Git 分支（避免再「亂改」）
+## 4) 快速結論判斷（30 秒內）
+- backend `candidates.length>0` 但 UI rows=0 ⇒ **frontend render/key/filter 去查**
+- backend `reason=no-asks` + `booksAttemptError` 有值 ⇒ **先修 backend books/節流**
+- backend `history.length>0` 但 UI history 空 ⇒ **前端 merge/filter 去查**
 
-建議工作方法（你之後會 cover 我條 branch）：
-- 每個問題一條分支（例如 `fix/crypto15m-history-render`）
-- 改動前先寫清楚「驗證方式」同「預期數字」（例如 history 50 rows、no-asks=0）
-- 唔好混埋 UI/Backend 多個議題一次過改，否則好難回溯責任
+---
 
+## 5) Redeem（Claim）注意事項（15M / 15M2）
+
+### A. 手動 redeem（最可靠）
+- 直接用 Dashboard：`/dashboard` → Claim / Redeem Now
+- 對應 backend endpoints（不分策略）：\n  - `POST /api/group-arb/redeem-drain`\n  - `POST /api/group-arb/redeem-now`\n  - `GET /api/group-arb/redeem/in-flight`
+
+### B. Auto-redeem（有前置條件）
+- Auto-redeem 需要 relayer/簽名相關設定正常（否則會 lastError）：
+  - 先打 `/api/group-arb/auto-redeem/status` 睇 `lastError`
+- Auto-redeem 會做過濾（所以你可能「明明 redeemable 但唔會自動 claim」）：\n  - 只會揀「工具落過單」嘅 conditionId\n  - 而且會要求 position 內有 `proxyWallet`（builder/proxy wallet）先會 submit\n  - 所以唔好用 CryptoAll/All2 的表面結果去推論 15M2 的 claim 行為
+
+---
+
+## 6) 「Position Missing」常見原因（唔一定係 bug）
+- Data API positions 有延遲：剛成交/剛建立 position，短時間內可能仲未出現 → refresh 幾次 `/crypto15m2/history?refresh=true` 再判斷
+- Address 範圍唔同：history 係用 funder（必要時再補 signer）去拉 positions；如果實際持倉喺另一個地址（例如某種 proxy/safe），就會長期 missing
+- 訂單未成交：history 有落單記錄，但 order 其實 failed/canceled/unfilled，positions 本身唔會有

@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { Tabs, Table, Card, Input, Button, Tag, Typography, Modal, InputNumber, Descriptions, Alert, Switch } from 'antd';
 import { RadarChartOutlined, SearchOutlined, ShoppingCartOutlined, PauseCircleOutlined, HistoryOutlined, PlayCircleOutlined, CloudOutlined, ReloadOutlined } from '@ant-design/icons';
 import api from '../api/client';
+import { AccountContext } from '../account/AccountContext';
 
 const { Title } = Typography;
 const formatTimeWithAgo = (iso: string) => {
@@ -13,6 +14,9 @@ const formatTimeWithAgo = (iso: string) => {
 
 
 function GroupArbTab() {
+    const { activeAccountId } = useContext(AccountContext);
+    const scope = String(activeAccountId || 'default').trim() || 'default';
+    const tdlSettingsKey = `tdl_settings:${scope}`;
     const [loading, setLoading] = useState(false);
     const [opps, setOpps] = useState<any[]>([]);
     const [orderHistory, setOrderHistory] = useState<any[]>([]); 
@@ -23,30 +27,38 @@ function GroupArbTab() {
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [selectedOpp, setSelectedOpp] = useState<any>(null);
     const [settingsOpen, setSettingsOpen] = useState(false);
-    const [settings, setSettings] = useState<any>(() => {
-        try {
-            const raw = localStorage.getItem('tdl_settings');
-            if (raw) return JSON.parse(raw);
-        } catch {
-        }
-        return {
-            targetProfitPercent: 10,
-            defaultShares: 5,
-            cutLossPercent: 25,
-            trailingStopPercent: 10,
-            enableOneLegTimeout: true,
-            oneLegTimeoutMinutes: 10,
-            autoCancelUnfilledOnTimeout: true,
-            wideSpreadCents: 5,
-            forceMarketExitFromPeakPercent: 15,
-            enableHedgeComplete: false,
-            oneLegTimeoutAction: 'UNWIND_EXIT',
-            maxSpreadCentsForHedge: 5,
-            maxSlippageCents: 2,
-        };
-    });
+    const defaultTdlSettings = {
+        targetProfitPercent: 10,
+        defaultShares: 5,
+        cutLossPercent: 25,
+        trailingStopPercent: 10,
+        enableOneLegTimeout: true,
+        oneLegTimeoutMinutes: 10,
+        autoCancelUnfilledOnTimeout: true,
+        wideSpreadCents: 5,
+        forceMarketExitFromPeakPercent: 15,
+        enableHedgeComplete: false,
+        oneLegTimeoutAction: 'UNWIND_EXIT',
+        maxSpreadCentsForHedge: 5,
+        maxSlippageCents: 2,
+    };
+    const [settings, setSettings] = useState<any>(defaultTdlSettings);
     const [orderShares, setOrderShares] = useState<number>(5);
     const [placingOrder, setPlacingOrder] = useState(false);
+    useEffect(() => {
+        setSettings(defaultTdlSettings);
+        try {
+            const legacyKey = 'tdl_settings';
+            const raw = localStorage.getItem(tdlSettingsKey) || localStorage.getItem(legacyKey);
+            if (!raw) return;
+            if (!localStorage.getItem(tdlSettingsKey) && localStorage.getItem(legacyKey)) {
+                try { localStorage.setItem(tdlSettingsKey, raw); } catch {}
+            }
+            const parsed = JSON.parse(raw);
+            if (parsed && typeof parsed === 'object') setSettings((p: any) => ({ ...p, ...parsed }));
+        } catch {
+        }
+    }, [tdlSettingsKey]);
 
     // Order Monitoring Modal
     const [isMonitorOpen, setIsMonitorOpen] = useState(false);
@@ -357,7 +369,7 @@ function GroupArbTab() {
                 title="TDL Settings"
                 open={settingsOpen}
                 onOk={() => {
-                    localStorage.setItem('tdl_settings', JSON.stringify(settings));
+                    localStorage.setItem(tdlSettingsKey, JSON.stringify(settings));
                     setSettingsOpen(false);
                 }}
                 onCancel={() => setSettingsOpen(false)}
@@ -524,18 +536,30 @@ function GroupArbTab() {
 }
 
 function AutoTradeTab() {
-    const [enabled, setEnabled] = useState(() => {
+    const { activeAccountId } = useContext(AccountContext);
+    const scope = String(activeAccountId || 'default').trim() || 'default';
+    const enabledKey = `auto_trade_enabled:${scope}`;
+    const [enabled, setEnabled] = useState(false);
+    useEffect(() => {
+        setEnabled(false);
         try {
-            return localStorage.getItem('auto_trade_enabled') === 'true';
+            const legacyKey = 'auto_trade_enabled';
+            const raw = localStorage.getItem(enabledKey);
+            const legacy = localStorage.getItem(legacyKey);
+            const next = raw != null ? raw : legacy;
+            if (!raw && legacy) {
+                try { localStorage.setItem(enabledKey, legacy); } catch {}
+            }
+            setEnabled(String(next || '').trim() === 'true');
         } catch {
-            return false;
+            setEnabled(false);
         }
-    });
+    }, [enabledKey]);
 
     const toggle = (v: boolean) => {
         setEnabled(v);
         try {
-            localStorage.setItem('auto_trade_enabled', v ? 'true' : 'false');
+            localStorage.setItem(enabledKey, v ? 'true' : 'false');
         } catch {
         }
     };

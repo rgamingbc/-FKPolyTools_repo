@@ -9,7 +9,10 @@
         "build": "tsc",
         "start": "node dist/index.js",
         "hedge:smoke": "tsx src/dev/crypto15m-hedge-smoke.ts",
-        "follow:demo-smoke": "tsx src/dev/follow-demo-sweep-smoke.ts",
+        "hedge:auto-sim": "tsx src/dev/crypto15m-hedge-auto-sim.ts",
+        "hedge:sim": "tsx src/dev/hedge-sim-runner.ts",
+        "all:auto-sim": "tsx src/dev/crypto-all-auto-sim.ts",
+        "follow:demo-sweep-smoke": "tsx src/dev/follow-demo-sweep-smoke.ts",
         "follow:smoke": "tsx src/dev/follow-activity-smoke.ts",
         "sweep:burst-smoke": "tsx src/dev/sweep-burst-smoke.ts"
     },

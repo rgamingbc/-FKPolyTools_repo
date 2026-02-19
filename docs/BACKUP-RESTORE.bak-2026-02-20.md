@@ -15,8 +15,6 @@
     relayer.json
     crypto15m-delta-thresholds.json
     crypto15m-config.json
-    crypto15m2-delta-thresholds.json
-    crypto15m2-config.json
     cryptoall2-delta-thresholds.json
     cryptoall-delta-thresholds.json
     crypto_all_2.json
@@ -88,7 +86,6 @@ EC2 上執行：
 
     curl -I http://127.0.0.1/crypto-15m | head
     curl -sS http://127.0.0.1/api/group-arb/crypto15m/diag | head
-    curl -sS http://127.0.0.1/api/group-arb/crypto15m2/diag | head
 
 ## 備份保留建議
 

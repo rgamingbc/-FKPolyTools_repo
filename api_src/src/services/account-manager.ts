@@ -46,12 +46,13 @@ export class AccountManager {
 
     constructor(options?: { stateDir?: string }) {
         const envDir = process.env.POLY_STATE_DIR != null ? String(process.env.POLY_STATE_DIR).trim() : '';
-        const fallback = path.join(os.tmpdir(), 'polymarket-tools');
-        const base = (options?.stateDir && String(options.stateDir).trim()) || envDir || fallback;
+        const legacyFallback = path.join(os.tmpdir(), 'polymarket-tools');
+        const stableFallback = path.resolve(process.cwd(), '..', '.polymarket-tools');
+        const base = (options?.stateDir && String(options.stateDir).trim()) || envDir || stableFallback;
         this.stateDir = path.isAbsolute(base) ? base : path.resolve(process.cwd(), base);
         this.accountsDir = path.join(this.stateDir, 'accounts');
         this.indexPath = path.join(this.accountsDir, 'index.json');
-        this.ensureInitialized();
+        this.ensureInitialized(legacyFallback);
     }
 
     getStateDir(): string {
@@ -172,13 +173,14 @@ export class AccountManager {
         };
     }
 
-    private ensureInitialized(): void {
+    private ensureInitialized(legacyFallback: string): void {
         fs.mkdirSync(this.accountsDir, { recursive: true });
         if (!fs.existsSync(this.indexPath)) {
             const idx: AccountsIndex = { version: 1, accounts: [] };
             fs.writeFileSync(this.indexPath, JSON.stringify(idx, null, 2), { encoding: 'utf8', mode: 0o600 });
             try { fs.chmodSync(this.indexPath, 0o600); } catch {}
         }
+        this.migrateFromLegacyDir(legacyFallback);
         this.ensureDefaultAccount();
     }
 
@@ -208,5 +210,58 @@ export class AccountManager {
         fs.writeFileSync(this.indexPath, JSON.stringify({ version: 1, accounts: idx.accounts }, null, 2), { encoding: 'utf8', mode: 0o600 });
         try { fs.chmodSync(this.indexPath, 0o600); } catch {}
     }
-}
 
+    private migrateFromLegacyDir(legacyBase: string): void {
+        try {
+            const legacy = String(legacyBase || '').trim();
+            if (!legacy) return;
+            const legacyAbs = path.isAbsolute(legacy) ? legacy : path.resolve(process.cwd(), legacy);
+            if (path.resolve(legacyAbs) === path.resolve(this.stateDir)) return;
+            const legacyAccountsDir = path.join(legacyAbs, 'accounts');
+            const legacyIndexPath = path.join(legacyAccountsDir, 'index.json');
+            if (!fs.existsSync(legacyIndexPath)) return;
+
+            let legacyIdx: AccountsIndex | null = null;
+            try {
+                const raw = fs.readFileSync(legacyIndexPath, 'utf8');
+                const parsed = JSON.parse(String(raw || '{}'));
+                const accounts = Array.isArray(parsed?.accounts) ? parsed.accounts : [];
+                const normalized: AccountRecord[] = accounts
+                    .map((a: any) => ({
+                        id: a?.id != null ? String(a.id).trim() : '',
+                        name: a?.name != null ? String(a.name).trim() : 'Account',
+                        createdAt: a?.createdAt != null ? String(a.createdAt) : new Date().toISOString(),
+                        updatedAt: a?.updatedAt != null ? String(a.updatedAt) : new Date().toISOString(),
+                    }))
+                    .filter((a: AccountRecord) => !!a.id);
+                legacyIdx = { version: 1, accounts: normalized };
+            } catch {
+                legacyIdx = null;
+            }
+            if (!legacyIdx || !legacyIdx.accounts.length) return;
+
+            const cur = this.readIndex();
+            const existingIds = new Set(cur.accounts.map((a) => a.id));
+            const mergedAccounts = [...cur.accounts];
+            for (const a of legacyIdx.accounts) {
+                if (!existingIds.has(a.id)) {
+                    mergedAccounts.push(a);
+                    existingIds.add(a.id);
+                }
+                const srcDir = path.join(legacyAccountsDir, a.id);
+                const dstDir = this.getAccountDir(a.id);
+                if (fs.existsSync(dstDir)) continue;
+                if (!fs.existsSync(srcDir)) continue;
+                try {
+                    fs.mkdirSync(path.dirname(dstDir), { recursive: true });
+                    (fs as any).cpSync(srcDir, dstDir, { recursive: true, force: false, errorOnExist: false });
+                } catch {
+                }
+            }
+            if (mergedAccounts.length !== cur.accounts.length) {
+                this.writeIndex({ version: 1, accounts: mergedAccounts });
+            }
+        } catch {
+        }
+    }
+}

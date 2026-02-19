@@ -19,6 +19,7 @@ const SYMBOL_OPTIONS = [
 ];
 
 const TF_OPTIONS = [
+    { label: '5m', value: '5m' },
     { label: '15m', value: '15m' },
     { label: '1h', value: '1h' },
     { label: '4h', value: '4h' },
@@ -28,6 +29,12 @@ const TF_OPTIONS = [
 export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryptoall2'; title: string; storageKey: string }) {
     const { strategy, title, storageKey } = props;
     const apiPath = useAccountApiPath();
+    const accountScopeKey = useMemo(() => apiPath('/'), [apiPath]);
+    const scopedStorageKey = useMemo(() => `${storageKey}:${accountScopeKey}`, [storageKey, accountScopeKey]);
+    const timeframeOptions = useMemo(() => {
+        if (strategy === 'cryptoall2') return TF_OPTIONS.filter((t) => t.value === '5m' || t.value === '15m');
+        return TF_OPTIONS.filter((t) => t.value === '15m');
+    }, [strategy]);
     const abortersRef = useRef<Map<string, AbortController>>(new Map());
     const apiGet = useCallback((key: string, p: string, config?: any) => {
         const prev = abortersRef.current.get(key);
@@ -71,9 +78,10 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
     const [, setThresholdsLoading] = useState(false);
     const [thresholdsSaving, setThresholdsSaving] = useState(false);
     const [autoRefresh, setAutoRefresh] = useState(true);
-    const [pollMs, setPollMs] = useState<number>(2000);
+    const [pollMs, setPollMs] = useState<number>(4000);
     const [minProb, setMinProb] = useState<number>(0.9);
     const [expiresWithinSec, setExpiresWithinSec] = useState<number>(180);
+    const [expiresWithinSecByTimeframe, setExpiresWithinSecByTimeframe] = useState<Record<string, number>>({ '5m': 180, '15m': 180, '1h': 180, '4h': 180, '1d': 180 });
     const [amountUsd, setAmountUsd] = useState<number>(1);
     const [splitBuyEnabled, setSplitBuyEnabled] = useState<boolean>(false);
     const [splitBuyPct3m, setSplitBuyPct3m] = useState<number>(34);
@@ -88,9 +96,13 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
     const [solMinDelta, setSolMinDelta] = useState<number>(0.8);
     const [xrpMinDelta, setXrpMinDelta] = useState<number>(0.0065);
     const [symbols, setSymbols] = useState<string[]>(['BTC', 'ETH', 'SOL', 'XRP']);
+    const [timeframes, setTimeframes] = useState<string[]>(strategy === 'cryptoall2' ? ['15m'] : ['15m']);
     const [showSkipped, setShowSkipped] = useState(false);
     const [dojiGuardEnabled, setDojiGuardEnabled] = useState<boolean>(true);
     const [riskSkipScore, setRiskSkipScore] = useState<number>(70);
+    const [riskAddOnBlockScore, setRiskAddOnBlockScore] = useState<number>(50);
+    const [deltaSyncMode, setDeltaSyncMode] = useState<'cryptoall2_base' | 'crypto15m_base' | 'max'>('cryptoall2_base');
+    const [adaptiveDeltaSync, setAdaptiveDeltaSync] = useState<boolean>(false);
 
     const [stoplossEnabled, setStoplossEnabled] = useState<boolean>(false);
     const [stoplossCut1DropCents, setStoplossCut1DropCents] = useState<number>(1);
@@ -102,18 +114,91 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
     const [adaptiveDeltaBigMoveMultiplier, setAdaptiveDeltaBigMoveMultiplier] = useState<number>(2);
     const [adaptiveDeltaRevertNoBuyCount, setAdaptiveDeltaRevertNoBuyCount] = useState<number>(4);
     const [matrixOpen, setMatrixOpen] = useState(false);
+    const [deltaBoxOpen, setDeltaBoxOpen] = useState(false);
+    const [deltaBoxLoading, setDeltaBoxLoading] = useState(false);
+    const [deltaBoxData, setDeltaBoxData] = useState<any>(null);
+    const [deltaBoxAutoConfirmEnabled, setDeltaBoxAutoConfirmEnabled] = useState(false);
+    const [deltaBoxAutoConfirmMinIntervalSec, setDeltaBoxAutoConfirmMinIntervalSec] = useState<number>(60);
+    const [deltaBoxAutoConfirmMinChangePct, setDeltaBoxAutoConfirmMinChangePct] = useState<number>(5);
+    const [deltaBoxApplyBySymbol, setDeltaBoxApplyBySymbol] = useState<Record<string, { enabled: boolean; timeframe: '5m' | '15m'; n: 10 | 20 | 50; pct: number }>>({
+        BTC: { enabled: true, timeframe: '15m', n: 20, pct: 100 },
+        ETH: { enabled: true, timeframe: '15m', n: 20, pct: 100 },
+        SOL: { enabled: true, timeframe: '15m', n: 20, pct: 100 },
+        XRP: { enabled: true, timeframe: '15m', n: 20, pct: 100 },
+    });
     const [settingsHydrated, setSettingsHydrated] = useState(false);
+    const deltaBoxLastAutoAtRef = useRef<number>(0);
 
     const timerRef = useRef<any>(null);
     const candidatesSigRef = useRef<string>('');
 
     useEffect(() => {
+        setSettingsHydrated(false);
+        setMinProb(0.9);
+        setExpiresWithinSec(180);
+        setExpiresWithinSecByTimeframe({ '5m': 180, '15m': 180, '1h': 180, '4h': 180, '1d': 180 });
+        setAmountUsd(1);
+        setSplitBuyEnabled(false);
+        setSplitBuyPct3m(34);
+        setSplitBuyPct2m(33);
+        setSplitBuyPct1m(33);
+        setSplitBuyTrendEnabled(true);
+        setSplitBuyTrendMinutes3m(3);
+        setSplitBuyTrendMinutes2m(2);
+        setSplitBuyTrendMinutes1m(1);
+        setPollMs(4000);
+        setSymbols(['BTC', 'ETH', 'SOL', 'XRP']);
+        setTimeframes(strategy === 'cryptoall2' ? ['15m'] : ['15m']);
+        setShowSkipped(false);
+        setDojiGuardEnabled(true);
+        setRiskSkipScore(70);
+        setRiskAddOnBlockScore(50);
+        setDeltaSyncMode('cryptoall2_base');
+        setAdaptiveDeltaSync(false);
+        setBtcMinDelta(600);
+        setEthMinDelta(30);
+        setSolMinDelta(0.8);
+        setXrpMinDelta(0.0065);
+        setAutoRefresh(true);
+        setStoplossEnabled(false);
+        setStoplossCut1DropCents(1);
+        setStoplossCut1SellPct(50);
+        setStoplossCut2DropCents(2);
+        setStoplossCut2SellPct(100);
+        setStoplossMinSecToExit(25);
+        setAdaptiveDeltaEnabled(true);
+        setAdaptiveDeltaBigMoveMultiplier(2);
+        setAdaptiveDeltaRevertNoBuyCount(4);
+        setDeltaBoxOpen(false);
+        setDeltaBoxData(null);
+        setDeltaBoxAutoConfirmEnabled(false);
+        setDeltaBoxAutoConfirmMinIntervalSec(60);
+        setDeltaBoxAutoConfirmMinChangePct(5);
+        setDeltaBoxApplyBySymbol({
+            BTC: { enabled: true, timeframe: '15m', n: 20, pct: 100 },
+            ETH: { enabled: true, timeframe: '15m', n: 20, pct: 100 },
+            SOL: { enabled: true, timeframe: '15m', n: 20, pct: 100 },
+            XRP: { enabled: true, timeframe: '15m', n: 20, pct: 100 },
+        });
         try {
-            const raw = localStorage.getItem(storageKey);
+            const raw = localStorage.getItem(scopedStorageKey) || localStorage.getItem(storageKey);
             if (!raw) return;
+            if (!localStorage.getItem(scopedStorageKey) && localStorage.getItem(storageKey)) {
+                try { localStorage.setItem(scopedStorageKey, raw); } catch {}
+            }
             const parsed = JSON.parse(raw);
             if (parsed?.minProb != null) setMinProb(Number(parsed.minProb));
             if (parsed?.expiresWithinSec != null) setExpiresWithinSec(Number(parsed.expiresWithinSec));
+            if (parsed?.expiresWithinSecByTimeframe && typeof parsed.expiresWithinSecByTimeframe === 'object') {
+                const e = parsed.expiresWithinSecByTimeframe;
+                setExpiresWithinSecByTimeframe({
+                    '5m': e['5m'] != null ? Number(e['5m']) : 180,
+                    '15m': e['15m'] != null ? Number(e['15m']) : 180,
+                    '1h': e['1h'] != null ? Number(e['1h']) : 180,
+                    '4h': e['4h'] != null ? Number(e['4h']) : 180,
+                    '1d': e['1d'] != null ? Number(e['1d']) : 180,
+                });
+            }
             if (parsed?.amountUsd != null) setAmountUsd(Number(parsed.amountUsd));
             if (parsed?.splitBuyEnabled != null) setSplitBuyEnabled(!!parsed.splitBuyEnabled);
             if (parsed?.splitBuyPct3m != null) setSplitBuyPct3m(Number(parsed.splitBuyPct3m));
@@ -125,9 +210,20 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
             if (parsed?.splitBuyTrendMinutes1m != null) setSplitBuyTrendMinutes1m(Number(parsed.splitBuyTrendMinutes1m));
             if (parsed?.pollMs != null) setPollMs(Number(parsed.pollMs));
             if (Array.isArray(parsed?.symbols)) setSymbols(parsed.symbols.map((x: any) => String(x || '').toUpperCase()).filter(Boolean));
+            if (Array.isArray(parsed?.timeframes)) {
+                const raw = parsed.timeframes.map((x: any) => String(x || '').toLowerCase()).filter(Boolean);
+                const next =
+                    strategy === 'cryptoall2'
+                        ? raw.filter((t: string) => t === '5m' || t === '15m')
+                        : raw.filter((t: string) => t === '15m');
+                setTimeframes(next.length ? next : (strategy === 'cryptoall2' ? ['15m'] : ['15m']));
+            }
             if (parsed?.showSkipped != null) setShowSkipped(!!parsed.showSkipped);
             if (parsed?.dojiGuardEnabled != null) setDojiGuardEnabled(!!parsed.dojiGuardEnabled);
             if (parsed?.riskSkipScore != null) setRiskSkipScore(Number(parsed.riskSkipScore));
+            if (parsed?.riskAddOnBlockScore != null) setRiskAddOnBlockScore(Number(parsed.riskAddOnBlockScore));
+            if (parsed?.deltaSyncMode != null) setDeltaSyncMode(String(parsed.deltaSyncMode) === 'crypto15m_base' ? 'crypto15m_base' : String(parsed.deltaSyncMode) === 'max' ? 'max' : 'cryptoall2_base');
+            if (parsed?.adaptiveDeltaSync != null) setAdaptiveDeltaSync(!!parsed.adaptiveDeltaSync);
             if (parsed?.btcMinDelta != null) setBtcMinDelta(Number(parsed.btcMinDelta));
             if (parsed?.ethMinDelta != null) setEthMinDelta(Number(parsed.ethMinDelta));
             if (parsed?.solMinDelta != null) setSolMinDelta(Number(parsed.solMinDelta));
@@ -142,18 +238,36 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
             if (parsed?.adaptiveDeltaEnabled != null) setAdaptiveDeltaEnabled(!!parsed.adaptiveDeltaEnabled);
             if (parsed?.adaptiveDeltaBigMoveMultiplier != null) setAdaptiveDeltaBigMoveMultiplier(Number(parsed.adaptiveDeltaBigMoveMultiplier));
             if (parsed?.adaptiveDeltaRevertNoBuyCount != null) setAdaptiveDeltaRevertNoBuyCount(Number(parsed.adaptiveDeltaRevertNoBuyCount));
+            if (parsed?.deltaBoxAutoConfirmEnabled != null) setDeltaBoxAutoConfirmEnabled(!!parsed.deltaBoxAutoConfirmEnabled);
+            if (parsed?.deltaBoxAutoConfirmMinIntervalSec != null) setDeltaBoxAutoConfirmMinIntervalSec(Math.max(5, Math.floor(Number(parsed.deltaBoxAutoConfirmMinIntervalSec) || 60)));
+            if (parsed?.deltaBoxAutoConfirmMinChangePct != null) setDeltaBoxAutoConfirmMinChangePct(Math.max(0, Math.min(100, Number(parsed.deltaBoxAutoConfirmMinChangePct) || 5)));
+            if (strategy === 'cryptoall2' && parsed?.deltaBoxApplyBySymbol && typeof parsed.deltaBoxApplyBySymbol === 'object') {
+                const by = parsed.deltaBoxApplyBySymbol as any;
+                const next: any = {};
+                for (const sym of ['BTC', 'ETH', 'SOL', 'XRP']) {
+                    const raw = by?.[sym] || {};
+                    const enabled = raw?.enabled === true;
+                    const tf = String(raw?.timeframe || '15m').toLowerCase();
+                    const timeframe = (tf === '5m' ? '5m' : '15m') as '5m' | '15m';
+                    const n = raw?.n === 10 ? 10 : raw?.n === 50 ? 50 : 20;
+                    const pct = Math.max(0, Math.min(500, Number(raw?.pct) || 100));
+                    next[sym] = { enabled, timeframe, n, pct };
+                }
+                setDeltaBoxApplyBySymbol(next);
+            }
         } catch {
         } finally {
             setSettingsHydrated(true);
         }
-    }, [storageKey]);
+    }, [scopedStorageKey, storageKey, strategy]);
 
     useEffect(() => {
         if (!settingsHydrated) return;
         try {
-            localStorage.setItem(storageKey, JSON.stringify({
+            localStorage.setItem(scopedStorageKey, JSON.stringify({
                 minProb,
                 expiresWithinSec,
+                expiresWithinSecByTimeframe,
                 amountUsd,
                 splitBuyEnabled,
                 splitBuyPct3m,
@@ -165,9 +279,13 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
                 splitBuyTrendMinutes1m,
                 pollMs,
                 symbols,
+                timeframes,
                 showSkipped,
                 dojiGuardEnabled,
                 riskSkipScore,
+                riskAddOnBlockScore,
+                deltaSyncMode,
+                adaptiveDeltaSync,
                 btcMinDelta,
                 ethMinDelta,
                 solMinDelta,
@@ -182,10 +300,14 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
                 adaptiveDeltaEnabled,
                 adaptiveDeltaBigMoveMultiplier,
                 adaptiveDeltaRevertNoBuyCount,
+                deltaBoxAutoConfirmEnabled,
+                deltaBoxAutoConfirmMinIntervalSec,
+                deltaBoxAutoConfirmMinChangePct,
+                deltaBoxApplyBySymbol,
             }));
         } catch {
         }
-    }, [settingsHydrated, storageKey, minProb, expiresWithinSec, amountUsd, splitBuyEnabled, splitBuyPct3m, splitBuyPct2m, splitBuyPct1m, splitBuyTrendEnabled, splitBuyTrendMinutes3m, splitBuyTrendMinutes2m, splitBuyTrendMinutes1m, pollMs, symbols, showSkipped, dojiGuardEnabled, riskSkipScore, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta, autoRefresh, stoplossEnabled, stoplossCut1DropCents, stoplossCut1SellPct, stoplossCut2DropCents, stoplossCut2SellPct, stoplossMinSecToExit, adaptiveDeltaEnabled, adaptiveDeltaBigMoveMultiplier, adaptiveDeltaRevertNoBuyCount]);
+    }, [settingsHydrated, scopedStorageKey, minProb, expiresWithinSec, expiresWithinSecByTimeframe, amountUsd, splitBuyEnabled, splitBuyPct3m, splitBuyPct2m, splitBuyPct1m, splitBuyTrendEnabled, splitBuyTrendMinutes3m, splitBuyTrendMinutes2m, splitBuyTrendMinutes1m, pollMs, symbols, timeframes, showSkipped, dojiGuardEnabled, riskSkipScore, riskAddOnBlockScore, deltaSyncMode, adaptiveDeltaSync, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta, autoRefresh, stoplossEnabled, stoplossCut1DropCents, stoplossCut1SellPct, stoplossCut2DropCents, stoplossCut2SellPct, stoplossMinSecToExit, adaptiveDeltaEnabled, adaptiveDeltaBigMoveMultiplier, adaptiveDeltaRevertNoBuyCount, deltaBoxAutoConfirmEnabled, deltaBoxAutoConfirmMinIntervalSec, deltaBoxAutoConfirmMinChangePct, deltaBoxApplyBySymbol]);
 
     const autoSummary = useMemo(() => {
         const parts = [
@@ -195,13 +317,14 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
             `exp≤${expiresWithinSec}s`,
             `usd=${amountUsd}`,
             `symbols=${(symbols || []).join(',')}`,
+            `tfs=${(timeframes || []).join(',')}`,
             splitBuyEnabled ? `split=ON(${splitBuyPct3m}/${splitBuyPct2m}/${splitBuyPct1m})` : 'split=OFF',
-            dojiGuardEnabled ? `doji=ON(skip≥${riskSkipScore})` : 'doji=OFF',
+            dojiGuardEnabled ? `doji=ON(skip≥${riskSkipScore},block≥${riskAddOnBlockScore})` : 'doji=OFF',
             stoplossEnabled != null ? `stoploss=${stoplossEnabled ? 'ON' : 'OFF'}` : null,
             adaptiveDeltaEnabled != null ? `adaptiveΔ=${adaptiveDeltaEnabled ? 'ON' : 'OFF'}` : null,
         ].filter(Boolean);
         return parts.join(' • ');
-    }, [status, pollMs, minProb, expiresWithinSec, amountUsd, symbols, splitBuyEnabled, splitBuyPct3m, splitBuyPct2m, splitBuyPct1m, dojiGuardEnabled, riskSkipScore, stoplossEnabled, adaptiveDeltaEnabled]);
+    }, [status, pollMs, minProb, expiresWithinSec, amountUsd, symbols, timeframes, splitBuyEnabled, splitBuyPct3m, splitBuyPct2m, splitBuyPct1m, dojiGuardEnabled, riskSkipScore, riskAddOnBlockScore, stoplossEnabled, adaptiveDeltaEnabled]);
 
     const fetchStatus = async () => {
         const res = await apiGet('status', `/group-arb/${strategy}/status`);
@@ -229,17 +352,22 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
     };
 
     const fetchCandidates = async () => {
+        const tfList = (timeframes && timeframes.length ? timeframes : ['15m'])
+            .map((x) => String(x || '').toLowerCase())
+            .filter(Boolean);
+        const expiresJson = JSON.stringify(expiresWithinSecByTimeframe || {});
         const res = await apiGet('candidates', `/group-arb/${strategy}/candidates`, {
             params: {
                 symbols: symbols.join(','),
-                timeframes: TF_OPTIONS.map((t) => t.value).join(','),
+                timeframes: tfList.join(','),
                 minProb,
                 expiresWithinSec,
+                expiresWithinSecByTimeframeJson: expiresJson,
                 limit: 40,
             }
         });
         const list = Array.isArray(res.data?.candidates) ? res.data.candidates : [];
-        const sig = (list || []).slice(0, 120).map((c: any) => `${c?.conditionId || ''}|${c?.secondsToExpire ?? ''}|${c?.upPrice ?? ''}|${c?.downPrice ?? ''}|${c?.chosenOutcome ?? ''}|${c?.chosenPrice ?? ''}|${c?.riskState ?? ''}|${c?.riskScore ?? ''}`).join(';');
+        const sig = (list || []).slice(0, 120).map((c: any) => `${c?.conditionId || ''}|${c?.timeframe || ''}|${c?.secondsToExpire ?? ''}|${c?.upPrice ?? ''}|${c?.downPrice ?? ''}|${c?.chosenOutcome ?? ''}|${c?.chosenPrice ?? ''}|${c?.riskState ?? ''}|${c?.riskScore ?? ''}`).join(';');
         if (candidatesSigRef.current !== sig) {
             candidatesSigRef.current = sig;
             setCandidates(list);
@@ -310,9 +438,10 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
     const onPersistConfig = async () => {
         setThresholdsSaving(true);
         try {
-            await apiPost('config', `/group-arb/${strategy}/config`, {
+            const payload: any = {
                 pollMs,
                 expiresWithinSec,
+                expiresWithinSecByTimeframe,
                 minProb,
                 amountUsd,
                 splitBuyEnabled,
@@ -324,8 +453,10 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
                 splitBuyTrendMinutes2m,
                 splitBuyTrendMinutes1m,
                 symbols,
+                timeframes,
                 dojiGuardEnabled,
                 riskSkipScore,
+                riskAddOnBlockScore,
                 stoplossEnabled,
                 stoplossCut1DropCents,
                 stoplossCut1SellPct,
@@ -335,7 +466,12 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
                 adaptiveDeltaEnabled,
                 adaptiveDeltaBigMoveMultiplier,
                 adaptiveDeltaRevertNoBuyCount,
-            });
+            };
+            if (strategy === 'cryptoall2') {
+                payload.deltaSyncMode = deltaSyncMode;
+                payload.adaptiveDeltaSync = adaptiveDeltaSync;
+            }
+            await apiPost('config', `/group-arb/${strategy}/config`, payload);
             message.success('Saved');
         } finally {
             setThresholdsSaving(false);
@@ -345,9 +481,10 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
     const onStart = async () => {
         setStartLoading(true);
         try {
-            const res = await apiPost('auto_start', `/group-arb/${strategy}/auto/start`, {
+            const payload: any = {
                 pollMs,
                 expiresWithinSec,
+                expiresWithinSecByTimeframe,
                 minProb,
                 amountUsd,
                 splitBuyEnabled,
@@ -359,8 +496,10 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
                 splitBuyTrendMinutes2m,
                 splitBuyTrendMinutes1m,
                 symbols,
+                timeframes,
                 dojiGuardEnabled,
                 riskSkipScore,
+                riskAddOnBlockScore,
                 stoplossEnabled,
                 stoplossCut1DropCents,
                 stoplossCut1SellPct,
@@ -370,7 +509,12 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
                 adaptiveDeltaEnabled,
                 adaptiveDeltaBigMoveMultiplier,
                 adaptiveDeltaRevertNoBuyCount,
-            });
+            };
+            if (strategy === 'cryptoall2') {
+                payload.deltaSyncMode = deltaSyncMode;
+                payload.adaptiveDeltaSync = adaptiveDeltaSync;
+            }
+            const res = await apiPost('auto_start', `/group-arb/${strategy}/auto/start`, payload);
             setStatus(res.data || null);
         } finally {
             setStartLoading(false);
@@ -430,6 +574,98 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
         }
     };
 
+    const deltaBoxEnabled = strategy === 'cryptoall2';
+    const deltaBoxSymbolsKey = useMemo(() => (symbols || []).join(','), [symbols]);
+    const fetchDeltaBox = async () => {
+        if (!deltaBoxEnabled) return;
+        setDeltaBoxLoading(true);
+        try {
+            const res = await apiGet('delta_box', '/group-arb/crypto/delta-box', {
+                params: {
+                    symbols: (symbols || []).join(','),
+                    timeframes: '5m,15m',
+                }
+            });
+            setDeltaBoxData(res.data || null);
+        } finally {
+            setDeltaBoxLoading(false);
+        }
+    };
+    const computeDeltaBoxRecommended = useCallback((data: any) => {
+        const rows = Array.isArray(data?.rows) ? data.rows : [];
+        const findRow = (sym: string, tf: string) => rows.find((r: any) => String(r?.symbol || '').toUpperCase() === sym && String(r?.timeframe || '').toLowerCase() === tf);
+        const takeAvg = (sym: string, tf: string, n: 10 | 20 | 50) => {
+            const r = findRow(sym, tf);
+            const k = n === 10 ? 'avg10' : n === 50 ? 'avg50' : 'avg20';
+            const v = r?.a?.[k];
+            return v != null && Number.isFinite(Number(v)) ? Number(v) : null;
+        };
+        const rec: any = {};
+        for (const sym of ['BTC', 'ETH', 'SOL', 'XRP']) {
+            const cfg = deltaBoxApplyBySymbol?.[sym] || { enabled: false, timeframe: '15m', n: 20, pct: 100 };
+            if (!cfg.enabled) continue;
+            const base = takeAvg(sym, cfg.timeframe, cfg.n);
+            if (base == null) continue;
+            const val = base * (Number(cfg.pct) / 100);
+            if (!Number.isFinite(val)) continue;
+            rec[sym] = val;
+        }
+        return rec as Record<string, number>;
+    }, [deltaBoxApplyBySymbol]);
+    const applyDeltaBoxToState = useCallback((data: any) => {
+        const rec = computeDeltaBoxRecommended(data);
+        if (rec.BTC != null) setBtcMinDelta(rec.BTC);
+        if (rec.ETH != null) setEthMinDelta(rec.ETH);
+        if (rec.SOL != null) setSolMinDelta(rec.SOL);
+        if (rec.XRP != null) setXrpMinDelta(rec.XRP);
+        return rec;
+    }, [computeDeltaBoxRecommended]);
+    const applyDeltaBoxAndSaveThresholds = useCallback(async () => {
+        if (!deltaBoxEnabled) return;
+        const data = deltaBoxData;
+        const rec = applyDeltaBoxToState(data);
+        if (!Object.keys(rec).length) return;
+        const payload: any = {};
+        if (rec.BTC != null) payload.btcMinDelta = rec.BTC;
+        if (rec.ETH != null) payload.ethMinDelta = rec.ETH;
+        if (rec.SOL != null) payload.solMinDelta = rec.SOL;
+        if (rec.XRP != null) payload.xrpMinDelta = rec.XRP;
+        await apiPost('thresholds_save', `/group-arb/${strategy}/delta-thresholds`, payload);
+        message.success('Delta thresholds saved');
+    }, [deltaBoxEnabled, deltaBoxData, applyDeltaBoxToState, apiPost, strategy]);
+    useEffect(() => {
+        if (!deltaBoxEnabled) return;
+        if (!deltaBoxOpen) return;
+        fetchDeltaBox().catch(() => {});
+        const t = setInterval(() => fetchDeltaBox().catch(() => {}), 15_000);
+        return () => { try { clearInterval(t); } catch {} };
+    }, [deltaBoxEnabled, deltaBoxOpen, deltaBoxSymbolsKey]);
+    useEffect(() => {
+        if (!deltaBoxEnabled) return;
+        if (!deltaBoxOpen) return;
+        if (deltaBoxAutoConfirmEnabled !== true) return;
+        if (!deltaBoxData) return;
+        const now = Date.now();
+        const minIntervalMs = Math.max(5, Math.floor(Number(deltaBoxAutoConfirmMinIntervalSec) || 60)) * 1000;
+        if (deltaBoxLastAutoAtRef.current && now - deltaBoxLastAutoAtRef.current < minIntervalMs) return;
+        const rec = computeDeltaBoxRecommended(deltaBoxData);
+        if (!Object.keys(rec).length) return;
+        const cur: any = { BTC: btcMinDelta, ETH: ethMinDelta, SOL: solMinDelta, XRP: xrpMinDelta };
+        let should = false;
+        for (const sym of Object.keys(rec)) {
+            const next = Number(rec[sym]);
+            const prev = Number(cur[sym]);
+            const pct = prev > 0 ? (Math.abs(next - prev) / prev) * 100 : (next !== prev ? 100 : 0);
+            if (pct >= Math.max(0, Number(deltaBoxAutoConfirmMinChangePct) || 0)) {
+                should = true;
+                break;
+            }
+        }
+        if (!should) return;
+        deltaBoxLastAutoAtRef.current = now;
+        applyDeltaBoxAndSaveThresholds().catch(() => {});
+    }, [deltaBoxEnabled, deltaBoxOpen, deltaBoxAutoConfirmEnabled, deltaBoxAutoConfirmMinIntervalSec, deltaBoxAutoConfirmMinChangePct, deltaBoxData, btcMinDelta, ethMinDelta, solMinDelta, xrpMinDelta, computeDeltaBoxRecommended, applyDeltaBoxAndSaveThresholds]);
+
     const onStartWatchdog = async () => {
         setWatchdogStartLoading(true);
         try {
@@ -456,9 +692,10 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
         const outcomeIndex = row?.chosenIndex != null ? Number(row.chosenIndex) : (row?.chosenOutcome === 'Down' ? 1 : 0);
         setBidLoadingId(conditionId);
         try {
-            await apiPost('order', `/group-arb/${strategy}/order`, {
+            const payload: any = {
                 conditionId,
                 outcomeIndex,
+                chosenTokenId: row?.chosenTokenId != null ? String(row.chosenTokenId) : undefined,
                 amountUsd,
                 minPrice: minProb,
                 splitBuyEnabled,
@@ -474,7 +711,12 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
                 adaptiveDeltaEnabled,
                 adaptiveDeltaBigMoveMultiplier,
                 adaptiveDeltaRevertNoBuyCount,
-            });
+            };
+            if (strategy === 'cryptoall2') {
+                payload.timeframe = String(row?.timeframe || '15m').toLowerCase();
+                payload.riskScore = row?.riskScore != null ? Number(row.riskScore) : undefined;
+            }
+            await apiPost('order', `/group-arb/${strategy}/order`, payload);
             message.success('Order placed');
             await fetchHistory().catch(() => {});
         } finally {
@@ -571,6 +813,7 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
                         </div>
                         <Space>
                             <Button icon={<ReloadOutlined />} onClick={onQuickRefresh} loading={refreshLoading}>Refresh</Button>
+                            {deltaBoxEnabled ? <Button onClick={() => { setDeltaBoxOpen(true); fetchDeltaBox().catch(() => {}); }}>Delta Box</Button> : null}
                             <Button onClick={onPersistConfig} loading={thresholdsSaving}>Save</Button>
                             <Button type="primary" onClick={onStart} loading={startLoading} disabled={status?.enabled === true}>Start</Button>
                             <Button danger onClick={onStop} loading={stopLoading} disabled={status?.enabled !== true}>Stop</Button>
@@ -581,7 +824,7 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
                 <Card title="Settings">
                     <Space wrap>
                         <Tooltip title="Poll interval (ms)">
-                            <InputNumber min={500} step={100} value={pollMs} onChange={(v) => setPollMs(Math.max(500, Math.floor(Number(v) || 2000)))} />
+                            <InputNumber min={500} step={100} value={pollMs} onChange={(v) => setPollMs(Math.max(500, Math.floor(Number(v) || 4000)))} />
                         </Tooltip>
                         <Tooltip title="Min probability">
                             <InputNumber
@@ -598,13 +841,44 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
                             />
                         </Tooltip>
                         <Tooltip title="Seconds to expiry (<=)">
-                            <InputNumber min={10} max={9999} step={1} value={expiresWithinSec} onChange={(v) => setExpiresWithinSec(Math.max(10, Math.floor(Number(v) || 180)))} />
+                            <InputNumber
+                                min={10}
+                                max={9999}
+                                step={1}
+                                value={expiresWithinSec}
+                                onChange={(v) => {
+                                    const n = Math.max(10, Math.floor(Number(v) || 180));
+                                    setExpiresWithinSec(n);
+                                    setExpiresWithinSecByTimeframe((prev) => {
+                                        const next = { ...(prev || {}) };
+                                        for (const tf of (timeframes || [])) next[String(tf)] = n;
+                                        return next;
+                                    });
+                                }}
+                            />
                         </Tooltip>
                         <Tooltip title="Amount USD per entry">
                             <InputNumber min={1} max={5000} step={1} value={amountUsd} onChange={(v) => setAmountUsd(Math.max(1, Number(v) || 1))} />
                         </Tooltip>
                         <Tooltip title="Symbols">
                             <Select mode="multiple" style={{ minWidth: 240 }} value={symbols} options={SYMBOL_OPTIONS} onChange={(v) => setSymbols(Array.isArray(v) ? v : [])} />
+                        </Tooltip>
+                        <Tooltip title="Timeframes">
+                            <Select
+                                mode="multiple"
+                                style={{ minWidth: 220 }}
+                                value={timeframes}
+                                options={timeframeOptions}
+                                onChange={(v) => {
+                                    const raw = Array.isArray(v) ? v.map((x) => String(x || '').toLowerCase()).filter(Boolean) : [];
+                                    if (strategy === 'cryptoall2') {
+                                        const next = raw.filter((t) => t === '5m' || t === '15m');
+                                        setTimeframes(next.length ? next : ['15m']);
+                                    } else {
+                                        setTimeframes(['15m']);
+                                    }
+                                }}
+                            />
                         </Tooltip>
                         <Tooltip title="Show skipped history entries">
                             <Checkbox checked={showSkipped} onChange={(e) => setShowSkipped(e.target.checked)}>Show skipped</Checkbox>
@@ -615,10 +889,51 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
                     </Space>
                     <div style={{ marginTop: 12 }}>
                         <Space wrap>
+                            {(timeframes || []).map((tf) => (
+                                <Tooltip key={`exp-${tf}`} title={`Seconds to expiry (<=) for ${tf}`}>
+                                    <Space size={6}>
+                                        <Tag>{String(tf)}</Tag>
+                                        <InputNumber
+                                            min={10}
+                                            max={9999}
+                                            step={1}
+                                            value={expiresWithinSecByTimeframe?.[String(tf)] ?? expiresWithinSec}
+                                            onChange={(v) => {
+                                                const n = Math.max(10, Math.floor(Number(v) || 180));
+                                                setExpiresWithinSecByTimeframe((prev) => ({ ...(prev || {}), [String(tf)]: n }));
+                                            }}
+                                        />
+                                    </Space>
+                                </Tooltip>
+                            ))}
+                        </Space>
+                    </div>
+                    <div style={{ marginTop: 12 }}>
+                        <Space wrap>
                             <Checkbox checked={dojiGuardEnabled} onChange={(e) => setDojiGuardEnabled(e.target.checked)}>DojiGuard</Checkbox>
                             <Tooltip title="Skip if riskScore >= this">
                                 <InputNumber min={0} max={100} step={1} value={riskSkipScore} onChange={(v) => setRiskSkipScore(Math.max(0, Math.min(100, Math.floor(Number(v) || 70))))} />
                             </Tooltip>
+                            <Tooltip title="Block split-buy add-on if riskScore >= this">
+                                <InputNumber min={0} max={100} step={1} value={riskAddOnBlockScore} onChange={(v) => setRiskAddOnBlockScore(Math.max(0, Math.min(100, Math.floor(Number(v) || 50))))} />
+                            </Tooltip>
+                            {strategy === 'cryptoall2' ? (
+                                <Tooltip title="Delta base source">
+                                    <Select
+                                        style={{ width: 180 }}
+                                        value={deltaSyncMode}
+                                        options={[
+                                            { label: 'Use ALL2 base', value: 'cryptoall2_base' },
+                                            { label: 'Use 15m base', value: 'crypto15m_base' },
+                                            { label: 'Use MAX(base)', value: 'max' },
+                                        ]}
+                                        onChange={(v) => setDeltaSyncMode(String(v) === 'crypto15m_base' ? 'crypto15m_base' : String(v) === 'max' ? 'max' : 'cryptoall2_base')}
+                                    />
+                                </Tooltip>
+                            ) : null}
+                            {strategy === 'cryptoall2' ? (
+                                <Checkbox checked={adaptiveDeltaSync} onChange={(e) => setAdaptiveDeltaSync(e.target.checked)}>Sync adaptiveΔ</Checkbox>
+                            ) : null}
                             <Checkbox checked={splitBuyEnabled} onChange={(e) => setSplitBuyEnabled(e.target.checked)}>Split Buy</Checkbox>
                             <InputNumber min={0} max={1000} step={1} value={splitBuyPct3m} onChange={(v) => setSplitBuyPct3m(Math.max(0, Math.min(1000, Math.floor(Number(v) || 0))))} />
                             <InputNumber min={0} max={1000} step={1} value={splitBuyPct2m} onChange={(v) => setSplitBuyPct2m(Math.max(0, Math.min(1000, Math.floor(Number(v) || 0))))} />
@@ -755,10 +1070,126 @@ export default function CryptoAllV2Shared(props: { strategy: 'cryptoall' | 'cryp
                     <pre style={{ whiteSpace: 'pre-wrap' }}>{reportLoading ? 'Loading...' : reportText}</pre>
                 </Modal>
 
+                <Modal
+                    title="Delta Box"
+                    open={deltaBoxOpen}
+                    onCancel={() => setDeltaBoxOpen(false)}
+                    footer={
+                        <Space>
+                            <Button onClick={() => fetchDeltaBox()} loading={deltaBoxLoading} disabled={!deltaBoxEnabled}>Refresh</Button>
+                            <Button onClick={() => applyDeltaBoxToState(deltaBoxData)} disabled={!deltaBoxEnabled || !deltaBoxData}>Apply</Button>
+                            <Button type="primary" onClick={() => applyDeltaBoxAndSaveThresholds()} disabled={!deltaBoxEnabled || !deltaBoxData}>Apply + Save</Button>
+                            <Button onClick={() => setDeltaBoxOpen(false)}>Close</Button>
+                        </Space>
+                    }
+                    width={1050}
+                >
+                    {!deltaBoxEnabled ? <Tag color="red">Only available on CryptoAll2</Tag> : null}
+                    <Space direction="vertical" style={{ width: '100%' }} size={12}>
+                        <Card size="small" title="Auto Confirm">
+                            <Space wrap>
+                                <Checkbox checked={deltaBoxAutoConfirmEnabled} onChange={(e) => setDeltaBoxAutoConfirmEnabled(e.target.checked)}>Enabled</Checkbox>
+                                <Tag>Min interval(s)</Tag>
+                                <InputNumber min={5} max={3600} step={5} value={deltaBoxAutoConfirmMinIntervalSec} onChange={(v) => setDeltaBoxAutoConfirmMinIntervalSec(Math.max(5, Math.min(3600, Math.floor(Number(v) || 60))))} />
+                                <Tag>Min change(%)</Tag>
+                                <InputNumber min={0} max={100} step={1} value={deltaBoxAutoConfirmMinChangePct} onChange={(v) => setDeltaBoxAutoConfirmMinChangePct(Math.max(0, Math.min(100, Math.floor(Number(v) || 0))))} />
+                            </Space>
+                        </Card>
+                        <Card size="small" title="Apply Rules">
+                            <Table
+                                rowKey={(r: any) => String(r?.symbol || '')}
+                                size="small"
+                                pagination={false}
+                                dataSource={['BTC', 'ETH', 'SOL', 'XRP'].map((sym) => ({ symbol: sym }))}
+                                columns={[
+                                    { title: 'Symbol', dataIndex: 'symbol', key: 'symbol', width: 90, render: (v: any) => <Tag>{String(v)}</Tag> },
+                                    {
+                                        title: 'On',
+                                        key: 'enabled',
+                                        width: 70,
+                                        render: (_: any, r: any) => {
+                                            const sym = String(r?.symbol || '');
+                                            const cfg = deltaBoxApplyBySymbol?.[sym] || { enabled: false, timeframe: '15m', n: 20, pct: 100 };
+                                            return <Checkbox checked={cfg.enabled === true} onChange={(e) => setDeltaBoxApplyBySymbol((prev) => ({ ...(prev || {}), [sym]: { ...cfg, enabled: e.target.checked } }))} />;
+                                        }
+                                    },
+                                    {
+                                        title: 'TF',
+                                        key: 'tf',
+                                        width: 90,
+                                        render: (_: any, r: any) => {
+                                            const sym = String(r?.symbol || '');
+                                            const cfg = deltaBoxApplyBySymbol?.[sym] || { enabled: false, timeframe: '15m', n: 20, pct: 100 };
+                                            return (
+                                                <Select
+                                                    style={{ width: 80 }}
+                                                    value={cfg.timeframe}
+                                                    options={[{ label: '5m', value: '5m' }, { label: '15m', value: '15m' }]}
+                                                    onChange={(v) => setDeltaBoxApplyBySymbol((prev) => ({ ...(prev || {}), [sym]: { ...cfg, timeframe: (String(v) === '5m' ? '5m' : '15m') as any } }))}
+                                                />
+                                            );
+                                        }
+                                    },
+                                    {
+                                        title: 'N',
+                                        key: 'n',
+                                        width: 80,
+                                        render: (_: any, r: any) => {
+                                            const sym = String(r?.symbol || '');
+                                            const cfg = deltaBoxApplyBySymbol?.[sym] || { enabled: false, timeframe: '15m', n: 20, pct: 100 };
+                                            return (
+                                                <Select
+                                                    style={{ width: 70 }}
+                                                    value={cfg.n}
+                                                    options={[{ label: '10', value: 10 }, { label: '20', value: 20 }, { label: '50', value: 50 }]}
+                                                    onChange={(v) => setDeltaBoxApplyBySymbol((prev) => ({ ...(prev || {}), [sym]: { ...cfg, n: (Number(v) === 10 ? 10 : Number(v) === 50 ? 50 : 20) as any } }))}
+                                                />
+                                            );
+                                        }
+                                    },
+                                    {
+                                        title: 'Pct',
+                                        key: 'pct',
+                                        width: 100,
+                                        render: (_: any, r: any) => {
+                                            const sym = String(r?.symbol || '');
+                                            const cfg = deltaBoxApplyBySymbol?.[sym] || { enabled: false, timeframe: '15m', n: 20, pct: 100 };
+                                            return (
+                                                <InputNumber
+                                                    min={0}
+                                                    max={500}
+                                                    step={1}
+                                                    value={cfg.pct}
+                                                    onChange={(v) => setDeltaBoxApplyBySymbol((prev) => ({ ...(prev || {}), [sym]: { ...cfg, pct: Math.max(0, Math.min(500, Math.floor(Number(v) || 100))) } }))}
+                                                />
+                                            );
+                                        }
+                                    },
+                                    {
+                                        title: 'A(10/20/50)',
+                                        key: 'a',
+                                        render: (_: any, r: any) => {
+                                            const sym = String(r?.symbol || '');
+                                            const cfg = deltaBoxApplyBySymbol?.[sym] || { enabled: false, timeframe: '15m', n: 20, pct: 100 };
+                                            const rows = Array.isArray(deltaBoxData?.rows) ? deltaBoxData.rows : [];
+                                            const row = rows.find((x: any) => String(x?.symbol || '').toUpperCase() === sym && String(x?.timeframe || '').toLowerCase() === String(cfg.timeframe));
+                                            const a10 = row?.a?.avg10;
+                                            const a20 = row?.a?.avg20;
+                                            const a50 = row?.a?.avg50;
+                                            const fmt = (v: any) => (v != null && Number.isFinite(Number(v))) ? Number(v).toFixed(6) : '-';
+                                            return <span>{fmt(a10)} / {fmt(a20)} / {fmt(a50)}</span>;
+                                        }
+                                    }
+                                ]}
+                            />
+                        </Card>
+                    </Space>
+                </Modal>
+
                 <Modal title="Matrix" open={matrixOpen} onCancel={() => setMatrixOpen(false)} footer={<Button onClick={() => setMatrixOpen(false)}>Close</Button>} width={1000}>
                     <Space wrap style={{ marginBottom: 12 }}>
                         {SYMBOL_OPTIONS.map((s) => <Tag key={s.value}>{s.value}</Tag>)}
-                        {TF_OPTIONS.map((t) => <Tag key={t.value}>{t.value}</Tag>)}
+                        {timeframeOptions.map((t) => <Tag key={t.value}>{t.value}</Tag>)}
                     </Space>
                     <Table
                         rowKey={(r: any) => String(r?.key || '')}
