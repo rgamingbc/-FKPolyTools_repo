@@ -721,6 +721,80 @@ export const groupArbRoutes: FastifyPluginAsync = async (fastify) => {
         }
     });
 
+    fastify.get('/redeem/preview', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Preview redeemables (no submit; supports auto filtering)',
+            querystring: {
+                type: 'object',
+                properties: {
+                    source: { type: 'string' },
+                    maxEntries: { type: 'number' },
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const q = request.query as any;
+                const r = await (scanner as any).previewRedeem({
+                    source: String(q.source || '').toLowerCase() === 'auto' ? 'auto' : 'manual',
+                    maxEntries: q.maxEntries != null ? Number(q.maxEntries) : undefined,
+                });
+                return r;
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
+    fastify.post('/stoploss/preview', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Preview stoploss trigger (no order submission)',
+            body: {
+                type: 'object',
+                properties: {
+                    entryPrice: { type: 'number' },
+                    currentPrice: { type: 'number' },
+                    soldPct: { type: 'number' },
+                    secondsToExpire: { type: 'number' },
+                    stoploss: {
+                        type: 'object',
+                        properties: {
+                            cut1DropCents: { type: 'number' },
+                            cut1SellPct: { type: 'number' },
+                            cut2DropCents: { type: 'number' },
+                            cut2SellPct: { type: 'number' },
+                            minSecToExit: { type: 'number' },
+                        }
+                    }
+                },
+                required: ['entryPrice', 'currentPrice', 'stoploss']
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const b = (request.body || {}) as any;
+                const r = (scanner as any).previewStoploss({
+                    entryPrice: Number(b.entryPrice),
+                    currentPrice: Number(b.currentPrice),
+                    soldPct: b.soldPct != null ? Number(b.soldPct) : undefined,
+                    secondsToExpire: b.secondsToExpire != null ? Number(b.secondsToExpire) : undefined,
+                    stoploss: {
+                        cut1DropCents: Number(b?.stoploss?.cut1DropCents),
+                        cut1SellPct: Number(b?.stoploss?.cut1SellPct),
+                        cut2DropCents: Number(b?.stoploss?.cut2DropCents),
+                        cut2SellPct: Number(b?.stoploss?.cut2SellPct),
+                        minSecToExit: b?.stoploss?.minSecToExit != null ? Number(b.stoploss.minSecToExit) : undefined,
+                    }
+                });
+                return r;
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
     fastify.get('/relayer/status', {
         schema: {
             tags: ['Group Arb'],

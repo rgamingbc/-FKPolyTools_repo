@@ -4774,6 +4774,121 @@ export class GroupArbitrageScanner {
         };
     }
 
+    async previewRedeem(options?: { source?: 'manual' | 'auto'; maxEntries?: number }) {
+        const source = options?.source === 'auto' ? 'auto' : 'manual';
+        const maxEntries = options?.maxEntries != null ? Math.max(1, Math.min(200, Math.floor(Number(options.maxEntries)))) : 50;
+        const funder = this.getFunderAddress();
+        const autoRedeemStatus = this.getAutoRedeemStatus();
+
+        const positions = await this.fetchDataApiPositions(funder).catch(() => []);
+        const redeemablesAll = (positions || []).filter((p: any) => !!p?.redeemable && p?.conditionId);
+
+        const toolConditionIds = source === 'auto'
+            ? new Set(this.orderHistory
+                .filter((e: any) => ['crypto15m_order', 'crypto15m2_order', 'cryptoall_order', 'cryptoall2_order'].includes(String(e?.action || '')) && e?.marketId)
+                .map((e: any) => String(e.marketId).trim().toLowerCase())
+                .filter((x: any) => !!x))
+            : null;
+
+        const toolRedeemablesAll = source === 'auto' && toolConditionIds
+            ? redeemablesAll.filter((p: any) => toolConditionIds.has(String(p?.conditionId || '').trim().toLowerCase()))
+            : redeemablesAll;
+
+        const redeemables = source === 'auto'
+            ? toolRedeemablesAll.filter((p: any) => {
+                const proxyWallet = String(p?.proxyWallet || '').trim();
+                return proxyWallet.startsWith('0x');
+            })
+            : redeemablesAll;
+
+        const skippedNonBuilder = source === 'auto' ? Math.max(0, toolRedeemablesAll.length - redeemables.length) : 0;
+        const inFlightCount = this.redeemInFlight.size;
+        const next = redeemables.find((p: any) => !this.redeemInFlight.has(String(p?.conditionId || '').trim())) || null;
+
+        const sample = redeemables
+            .slice(0, maxEntries)
+            .map((p: any) => ({
+                conditionId: p?.conditionId != null ? String(p.conditionId) : null,
+                proxyWallet: p?.proxyWallet != null ? String(p.proxyWallet) : null,
+                title: p?.title ?? null,
+                outcome: p?.outcome ?? null,
+                slug: p?.slug ?? null,
+                eventSlug: p?.eventSlug ?? null,
+                redeemable: p?.redeemable === true,
+            }));
+
+        return {
+            success: true,
+            source,
+            funder,
+            inFlightCount,
+            autoRedeemStatus,
+            counts: {
+                redeemablesAll: redeemablesAll.length,
+                toolRedeemablesAll: toolRedeemablesAll.length,
+                redeemables: redeemables.length,
+                skippedNonBuilder,
+            },
+            next: next ? {
+                conditionId: next?.conditionId != null ? String(next.conditionId) : null,
+                proxyWallet: next?.proxyWallet != null ? String(next.proxyWallet) : null,
+                title: next?.title ?? null,
+                outcome: next?.outcome ?? null,
+                slug: next?.slug ?? null,
+                eventSlug: next?.eventSlug ?? null,
+            } : null,
+            sample,
+        };
+    }
+
+    previewStoploss(input: { entryPrice: number; currentPrice: number; stoploss: { cut1DropCents: number; cut1SellPct: number; cut2DropCents: number; cut2SellPct: number; minSecToExit?: number }; soldPct?: number; secondsToExpire?: number }) {
+        const entry = Number(input?.entryPrice) || 0;
+        const current = Number(input?.currentPrice) || 0;
+        const soldPct = input?.soldPct != null && Number.isFinite(Number(input.soldPct)) ? Math.max(0, Math.min(100, Number(input.soldPct))) : 0;
+        const remainingSec = input?.secondsToExpire != null && Number.isFinite(Number(input.secondsToExpire)) ? Math.floor(Number(input.secondsToExpire)) : null;
+
+        const cut1Drop = Math.max(0, Math.min(50, Math.floor(Number(input?.stoploss?.cut1DropCents) || 0))) / 100;
+        const cut2Drop = Math.max(0, Math.min(50, Math.floor(Number(input?.stoploss?.cut2DropCents) || 0))) / 100;
+        const cut1Pct = Math.max(0, Math.min(100, Math.floor(Number(input?.stoploss?.cut1SellPct) || 0)));
+        const cut2Pct = Math.max(0, Math.min(100, Math.floor(Number(input?.stoploss?.cut2SellPct) || 0)));
+        const minSecToExit = Math.max(0, Math.floor(Number(input?.stoploss?.minSecToExit) || 0));
+
+        const cut1Price = entry > 0 ? Math.max(0, entry - cut1Drop) : null;
+        const cut2Price = entry > 0 ? Math.max(0, entry - cut2Drop) : null;
+        const dropAbs = entry > 0 ? Math.max(0, entry - current) : null;
+        const dropPct = (entry > 0 && dropAbs != null) ? (dropAbs / entry) * 100 : null;
+
+        if (remainingSec != null && minSecToExit > 0 && remainingSec < minSecToExit) {
+            return { success: true, trigger: null, blocked: true, blockedReason: 'minSecToExit', entryPrice: entry, currentPrice: current, dropAbs, dropPct, cut1Price, cut2Price, targetPct: null };
+        }
+
+        let trigger: 'cut1' | 'cut2' | null = null;
+        let targetPct: number | null = null;
+
+        if (cut2Drop > 0 && cut2Price != null && current > 0 && current <= cut2Price && soldPct < cut2Pct) {
+            trigger = 'cut2';
+            targetPct = cut2Pct;
+        } else if (cut1Drop > 0 && cut1Price != null && current > 0 && current <= cut1Price && soldPct < cut1Pct) {
+            trigger = 'cut1';
+            targetPct = cut1Pct;
+        }
+
+        return {
+            success: true,
+            trigger,
+            blocked: false,
+            blockedReason: null,
+            entryPrice: entry,
+            currentPrice: current,
+            dropAbs,
+            dropPct,
+            soldPct,
+            cut1Price,
+            cut2Price,
+            targetPct,
+        };
+    }
+
     private loadAutoRedeemConfigFromFile() {
         if (!this.autoRedeemConfigPath) return;
         try {
