@@ -1,114 +1,218 @@
-# Local Install (FKPolyTools)
+# Install + Update（FKPolyTools）
 
-## 目標
+呢份文件係「唯一入口」。目標係：任何人跟住做，都能夠裝到**同一個版本**，並且 UI 一定見到 `⏱️ 15M Crypto 2`（`/crypto-15m-2`）。
 
-- 後端（Fastify / TS）：`FKPolyTools_Repo/api_src`
-- 前端（Vite / React）：`FKPolyTools_Repo/web_front_src`
-- 預設 Port：API = 3001、Web = 5173
+## 你應該見到咩（版本驗收）
 
-## 常用頁面（本地）
+打開 Web 後，Sidebar 必須見到：
 
-- Dashboard：`http://localhost:5173/`
-- 15M Crypto：`http://localhost:5173/crypto-15m`
-- 15M Crypto 2：`http://localhost:5173/crypto-15m-2`
-- Crypto All：`http://localhost:5173/crypto-all`
-- Crypto All 2：`http://localhost:5173/crypto-all-2`
+- `⏱️ 15M Crypto`（`/crypto-15m`）
+- `⏱️ 15M Crypto 2`（`/crypto-15m-2`）
+- `🪤 Crypto15M Hedge`（`/crypto-15m-hedge`）
+- `🧩 Crypto All2`（`/crypto-all2`）
 
-## 注意事項（重要）
+兼容舊連結（唔係停用，只係 redirect）：
+
+- `/crypto-15m-all` → `/crypto-15m`
+- `/crypto-all` → `/crypto-all2`
+
+Crypto All2 內包含 Matrix/DeltaBox（策略視圖 + delta thresholds 操作），如果你裝好但 UI 完全冇呢啲入口，基本上就係裝到舊版本。
+
+## 最重要：一定要用正確 Repo / Branch
+
+你要 clone/更新嘅 repo 應該係：
+
+- `https://github.com/rgamingbc/-FKPolyTools_repo.git`
+
+本次修正（包含 Crypto15m2/AutoTrade/Hedge 等）係喺 branch：
+
+- `fix/crypto15m2-autotrade-hedge-20260220`
+
+用以下命令確認你部機係咪真係跟緊正確 repo + branch：
+
+```bash
+git remote -v
+git branch --show-current
+git log -1 --oneline
+```
+
+如果你 remote/branch 唔對，UI 好大機會仍然係舊版本（例如只見到 Crypto 15M / Crypto All，而冇 Crypto 15M 2）。
+
+## 安全注意事項（一定要讀）
 
 - `.env` / 私鑰 / relayer keys 唔可以入 git，必須只留喺機器本地（或加密備份）。
-- runtime 落盤檔案建議固定放喺同一個 persistent directory（雲端一般係 `/var/lib/polymarket-tools`）；換機/重裝要跟 [BACKUP-RESTORE.md](file:///Users/user/Documents/trae_projects/polymarket/static/FKPolyTools_Repo/docs/BACKUP-RESTORE.md) 還原。
-- Auto-redeem（Claim）需要 relayer 正常；如自動 claim 冇反應，先睇 `/api/group-arb/auto-redeem/status` 嘅 `lastError`。
-- History（落單/claim/stoploss 記錄）會落盤到 `.polymarket-tools/accounts/<accountId>/history.json`；建議唔好用 tmp 做 state dir，避免重啟後「似唔見記錄」。
-- 如你開住 UI 不停調 config / start-stop watchdog，舊版會容易把 order 記錄「頂走」；新版已改為優先清 config/watchdog，保留 order/redeem，並預設保留更多（可用 `POLY_ORDER_HISTORY_MAX` 調整）。
+- runtime state 建議固定放喺同一個 persistent directory（雲端一般係 `/var/lib/polymarket-tools`）；換機/重裝要跟 [BACKUP-RESTORE.md](file:///Users/user/Documents/trae_projects/polymarket/static/FKPolyTools_Repo/docs/BACKUP-RESTORE.md) 還原。
+- 如需要交易（下單/平倉/auto），必須提供 `POLY_PRIVKEY`（0x 開頭私鑰），並且只放入機器本地 `.env`。
 
-## 從 Git 取得 / 更新
+## Ubuntu 伺服器（一鍵安裝 / 一鍵更新）
 
-### 更新（既有機器）
+以下腳本可以重複跑：\n- 第一次跑＝安裝\n- 之後跑＝更新（會 git fetch/checkout/pull、重新 build、重啟 service）
 
 ```bash
-git pull --ff-only
+set -euo pipefail
+
+REMOTE_URL="https://github.com/rgamingbc/-FKPolyTools_repo.git"
+GIT_REF="fix/crypto15m2-autotrade-hedge-20260220"
+
+INSTALL_PARENT="/opt/fktools"
+REPO_DIR="$INSTALL_PARENT/FKPolyTools_Repo"
+DATA_DIR="/var/lib/polymarket-tools"
+
+API_PORT="3001"
+API_HOST="127.0.0.1"
+NODE_MAJOR="20"
+
+sudo apt update -y
+sudo apt install -y nginx git curl build-essential ca-certificates
+
+if ! command -v node >/dev/null 2>&1; then
+  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | sudo -E bash -
+  sudo apt install -y nodejs
+fi
+
+node -v
+npm -v
+
+sudo mkdir -p "$INSTALL_PARENT"
+sudo chown -R "$(whoami)":"$(whoami)" "$INSTALL_PARENT" || true
+sudo mkdir -p "$DATA_DIR"
+sudo chown -R "$(whoami)":"$(whoami)" "$DATA_DIR" || true
+
+if [ ! -d "$REPO_DIR/.git" ]; then
+  git clone "$REMOTE_URL" "$REPO_DIR"
+fi
+
+cd "$REPO_DIR"
+git fetch --all --prune
+git checkout -B "$GIT_REF" "origin/$GIT_REF" || git checkout "$GIT_REF"
+git pull --ff-only || true
+git log -1 --oneline
+
+cd "$REPO_DIR/api_src"
+npm ci
+npm run build
+
+if [ ! -f "$REPO_DIR/api_src/.env" ]; then
+  cat >"$REPO_DIR/api_src/.env" <<EOF
+API_PORT=$API_PORT
+API_HOST=$API_HOST
+POLY_ORDER_HISTORY_PATH=$DATA_DIR/history.json
+POLY_AUTO_REDEEM_CONFIG_PATH=$DATA_DIR/auto-redeem.json
+POLY_CRYPTO15M_DELTA_THRESHOLDS_PATH=$DATA_DIR/crypto15m-delta-thresholds.json
+POLY_RELAYER_CONFIG_PATH=$DATA_DIR/relayer.json
+# 如要交易：你必須手動加入（不要入 git）
+# POLY_PRIVKEY=0x....
+EOF
+  chmod 600 "$REPO_DIR/api_src/.env" || true
+fi
+
+cd "$REPO_DIR/web_front_src"
+npm ci
+npm run build
+
+sudo tee /etc/systemd/system/fktools-api.service >/dev/null <<EOF
+[Unit]
+Description=FKPolyTools API
+After=network.target
+
+[Service]
+Type=simple
+User=$(whoami)
+WorkingDirectory=$REPO_DIR/api_src
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo tee /etc/nginx/sites-available/fktools >/dev/null <<EOF
+server {
+  listen 80;
+  server_name _;
+
+  root $REPO_DIR/web_front_src/dist;
+  index index.html;
+
+  location ~ ^/api/group-arb/.*/ws$ {
+    proxy_pass http://127.0.0.1:$API_PORT;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+  }
+
+  location /api/ {
+    proxy_pass http://127.0.0.1:$API_PORT/api/;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_read_timeout 180s;
+    proxy_send_timeout 180s;
+  }
+
+  location / {
+    try_files \$uri \$uri/ /index.html;
+  }
+}
+EOF
+
+sudo rm -f /etc/nginx/sites-enabled/default || true
+sudo ln -sf /etc/nginx/sites-available/fktools /etc/nginx/sites-enabled/fktools
+sudo nginx -t
+sudo systemctl daemon-reload
+sudo systemctl enable --now fktools-api
+sudo systemctl reload nginx
+
+echo "DONE"
+echo "API: http://127.0.0.1:$API_PORT/api/"
 ```
 
-如你係喺外層 repo 操作（而 `FKPolyTools_Repo` 係獨立 repo / 類 submodule），要另外更新一次：
+## 本機開發（Local dev）
 
-```bash
-cd FKPolyTools_Repo
-git pull --ff-only
-```
-
-如果你用 submodule 管理：
-
-```bash
-git submodule update --init --recursive
-```
-
-## 後端：api_src
+後端：
 
 ```bash
 cd FKPolyTools_Repo/api_src
-cp .env.example .env
 npm ci
 npm run dev
 ```
 
-如需要交易（下單/平倉/auto），必須提供 `POLY_PRIVKEY`（0x 開頭私鑰）。
-
-## 前端：web_front_src
+前端：
 
 ```bash
 cd FKPolyTools_Repo/web_front_src
-cp .env.example .env
 npm ci
 npm run dev
 ```
 
-## 常見痛點（一定要避）
+## 驗收（一定要做）
 
-### 1) Port/WS 不一致（WS OFF、Candidates 唔更新）
-
-- API 預設係 `API_PORT=3001`
-- 前端 proxy 會用 `VITE_API_PORT`（預設亦係 3001）
-- 如果你改過 API port，記得同時改前端 `.env` 入面嘅 `VITE_API_PORT`
-
-### 1.5) 前端見到 404 / AutoTrade / Watchdog 唔 work（其實係 API 唔通）
-
-- 先驗收後端係咪真係起咗（必做）：`curl -sS http://localhost:3001/api/version | head`
-- 再驗收前端 proxy 是否正常：`curl -sS http://localhost:5173/api/group-arb/crypto15m/status | head`
-- 只要上述任何一條唔通，UI 上面所有 `/api/...` 都會壞（表面就會似 404 / 無反應）。
-
-### 2) API/Trading 授權狀態卡住
-
-- 交易需要 `POLY_PRIVKEY`（API Key/UUID 唔足夠用嚟簽交易）
-- 設定私鑰後，Trading client 初始化失敗會自動重試（有 backoff），UI 會顯示 `Key/Trading/Creds/InitError`
-
-### 3) 本地完全打唔開（Dashboard/CryptoAll/All2 全部入唔到）
-
-- 先確認 Web 係咪真係起咗（預設 `http://localhost:5173/`）
-- 如果 `localhost:5173` 連唔到：
-  - 多數係未有喺 `FKPolyTools_Repo/web_front_src` 起 Web
-  - 或者 5173 被佔用，Vite 會自動轉用 5174/5175（要睇啟動 log 顯示嘅 URL）
-- 如果你其實係喺另一部機/VM/容器起 server：
-  - `localhost` 只會指向你本機，必然打唔開
-  - 建議用 SSH port-forward，或者 Vite 用 `--host 0.0.0.0` 再用 `http://<機器IP>:5173/` 開
-
-## 驗收
-
-- 前端：打開 `http://localhost:5173`
-- 後端：
+API：
 
 ```bash
-curl -sS http://localhost:3001/api/group-arb/setup/status | head
+curl -sS http://localhost:3001/api/version | head
 curl -sS http://localhost:3001/api/group-arb/crypto15m/status | head
 curl -sS http://localhost:3001/api/group-arb/crypto15m2/status | head
 curl -sS http://localhost:3001/api/group-arb/crypto15m2/diag | head
-curl -sS http://localhost:3001/api/group-arb/cryptoall/status | head
 curl -sS http://localhost:3001/api/group-arb/cryptoall2/status | head
 ```
 
-## CryptoAll vs CryptoAll2（獨立運作）
+UI：
 
-- 兩者策略邏輯對齊，但 Config/State 係分開，方便做「進取 vs 保守」對照
-- 預設落盤檔案（可用 env 覆蓋）：
-  - CryptoAll：`crypto_all_v2.json`
-  - CryptoAll2：`crypto_all_2.json`
+- 打開 `http://localhost:5173/`（dev）或 `http://<server-ip>/`（nginx）\n- Sidebar 必須見到 `⏱️ 15M Crypto 2`
+
+## 常見問題（點解你會「以為更新咗但其實仲係舊版」）
+
+- Clone 錯 repo：用 `git remote -v` 檢查，一定要係 `rgamingbc/-FKPolyTools_repo`。\n- Checkout 錯 branch：用 `git branch --show-current`。\n- Server 用 nginx serve `dist`：你冇跑 `web_front_src/npm run build`，就會永遠見到舊 UI。\n- Browser cache：hard refresh（Cmd+Shift+R / Ctrl+F5）。\n- 你其實係開緊另一部舊 server：用 `curl http://<server-ip>/api/version` 對照版本。
+
+## 本次更新做咗咩（俾「下家」一眼看明）
+
+- Crypto15m2 / AutoTrade：修正 5m orderbook refresh、修正 expiresWithinSec override、修正 `/crypto15m2/order` 可能 500（JSON circular）。\n- Crypto15m Hedge：入場前做 p2Max 可行性檢查；入場後即刻嘗試 hedge；到期前未 hedge 會 unwind（封頂 one-leg 風險）。\n- Crypto All2：UI 內含 Matrix/DeltaBox（delta thresholds 管理/應用流程）。\n- 相容：舊 `crypto-all` / `crypto-15m-all` 路徑保留 redirect，避免舊 bookmark 壞。
