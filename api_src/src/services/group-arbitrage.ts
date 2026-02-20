@@ -4689,11 +4689,47 @@ export class GroupArbitrageScanner {
         ]);
         const list = Array.isArray(positions) ? positions : [];
         const isAddress = (v: string) => /^0x[a-fA-F0-9]{40}$/.test(String(v || '').trim());
-        const proxyWallets = Array.from(new Set(list
+        const allProxyWalletsRaw = list
             .map((p: any) => String(p?.proxyWallet || '').trim())
-            .filter((a) => !!a && isAddress(a))))
-            .filter((a) => a.toLowerCase() !== funder.toLowerCase())
-            .slice(0, 5);
+            .filter((a) => !!a && isAddress(a))
+            .filter((a) => a.toLowerCase() !== funder.toLowerCase());
+        const dedupeByLower = (arr: string[]) => {
+            const m = new Map<string, string>();
+            for (const a of arr) {
+                const k = a.toLowerCase();
+                if (!m.has(k)) m.set(k, a);
+            }
+            return Array.from(m.values());
+        };
+        const allProxyWallets = dedupeByLower(allProxyWalletsRaw);
+        const knownPath = path.join(path.dirname(this.orderHistoryPath), 'known-proxy-wallets.json');
+        let knownProxyWallets: string[] = [];
+        try {
+            if (fs.existsSync(knownPath)) {
+                const raw = fs.readFileSync(knownPath, 'utf8');
+                const parsed = JSON.parse(String(raw || '[]'));
+                if (Array.isArray(parsed)) knownProxyWallets = parsed.map((x: any) => String(x || '').trim()).filter((a) => !!a && isAddress(a) && a.toLowerCase() !== funder.toLowerCase());
+            }
+        } catch {
+        }
+        const mergedProxyWallets = dedupeByLower([...knownProxyWallets, ...allProxyWallets]);
+        try {
+            const prev = dedupeByLower(knownProxyWallets);
+            if (mergedProxyWallets.length !== prev.length) {
+                const writeAtomic = (targetPath: string, payload: string) => {
+                    const tmpPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+                    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+                    fs.writeFileSync(tmpPath, payload);
+                    fs.renameSync(tmpPath, targetPath);
+                };
+                writeAtomic(knownPath, JSON.stringify(mergedProxyWallets));
+                try { fs.chmodSync(knownPath, 0o600); } catch {}
+            }
+        } catch {
+        }
+        const maxCashWalletsRaw = process.env.POLY_CASH_WALLETS_MAX != null ? Number(process.env.POLY_CASH_WALLETS_MAX) : 20;
+        const maxCashWallets = Math.max(5, Math.min(50, Number.isFinite(maxCashWalletsRaw) ? Math.floor(maxCashWalletsRaw) : 20));
+        const proxyWallets = mergedProxyWallets.slice(0, maxCashWallets);
         const cashWallets = [funder, ...proxyWallets];
         const balances = await Promise.all(cashWallets.map(async (address) => {
             const b = await this.fetchStableBalances(address).catch(() => ({ usdc: 0, usdcE: 0, total: 0 }));
@@ -4712,6 +4748,8 @@ export class GroupArbitrageScanner {
             cashUsdc,
             cashUsdcE,
             cashWallets: balances,
+            proxyWallets,
+            proxyWalletsTotal: mergedProxyWallets.length,
             positionsValue,
             claimableCount: claimable.length,
             positions: topPositions,

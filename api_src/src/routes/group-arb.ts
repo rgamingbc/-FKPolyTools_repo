@@ -454,6 +454,45 @@ export const groupArbRoutes: FastifyPluginAsync = async (fastify) => {
         }
     });
 
+    fastify.get('/portfolio-diagnose', {
+        schema: {
+            tags: ['Group Arb'],
+            summary: 'Portfolio diagnose (find tiny holdings + redeemables)',
+            querystring: {
+                type: 'object',
+                properties: {
+                    positionsLimit: { type: 'number' },
+                    tinyMaxUsd: { type: 'number' },
+                    tinyLimit: { type: 'number' },
+                }
+            }
+        },
+        handler: async (request, reply) => {
+            try {
+                const scanner = (request as any).scanner as GroupArbitrageScanner;
+                const q = request.query as any;
+                const positionsLimit = q.positionsLimit != null ? Number(q.positionsLimit) : 500;
+                const tinyMaxUsd = q.tinyMaxUsd != null ? Number(q.tinyMaxUsd) : 2;
+                const tinyLimit = q.tinyLimit != null ? Number(q.tinyLimit) : 50;
+                const summary = await scanner.getPortfolioSummary({ positionsLimit });
+                const positions = Array.isArray((summary as any)?.positions) ? (summary as any).positions : [];
+                const cur = (p: any) => (p?.currentValue != null ? Number(p.currentValue) : (p?.curValue != null ? Number(p.curValue) : NaN));
+                const redeemables = positions
+                    .filter((p: any) => p?.redeemable === true && p?.conditionId)
+                    .map((p: any) => ({ conditionId: p.conditionId, currentValue: cur(p), title: p.title, slug: p.slug, eventSlug: p.eventSlug, outcome: p.outcome, proxyWallet: p.proxyWallet }))
+                    .sort((a: any, b: any) => Number(b.currentValue || 0) - Number(a.currentValue || 0));
+                const tiny = positions
+                    .map((p: any) => ({ conditionId: p.conditionId, redeemable: p.redeemable === true, currentValue: cur(p), title: p.title, slug: p.slug, eventSlug: p.eventSlug, outcome: p.outcome, proxyWallet: p.proxyWallet }))
+                    .filter((p: any) => Number.isFinite(p.currentValue) && p.currentValue > 0 && p.currentValue <= Math.max(0, tinyMaxUsd))
+                    .sort((a: any, b: any) => Number(b.currentValue || 0) - Number(a.currentValue || 0))
+                    .slice(0, Math.max(1, Math.floor(tinyLimit)));
+                return { success: true, summary, redeemables, tiny };
+            } catch (err: any) {
+                return reply.status(500).send({ error: err.message });
+            }
+        }
+    });
+
     fastify.post('/cancel-order', {
         schema: {
             tags: ['Group Arb'],
