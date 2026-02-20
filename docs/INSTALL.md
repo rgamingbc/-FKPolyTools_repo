@@ -19,6 +19,8 @@
 - `.env` / 私鑰 / relayer keys 唔可以入 git，必須只留喺機器本地（或加密備份）。
 - runtime 落盤檔案建議固定放喺同一個 persistent directory（雲端一般係 `/var/lib/polymarket-tools`）；換機/重裝要跟 [BACKUP-RESTORE.md](file:///Users/user/Documents/trae_projects/polymarket/static/FKPolyTools_Repo/docs/BACKUP-RESTORE.md) 還原。
 - Auto-redeem（Claim）需要 relayer 正常；如自動 claim 冇反應，先睇 `/api/group-arb/auto-redeem/status` 嘅 `lastError`。
+- History（落單/claim/stoploss 記錄）會落盤到 `.polymarket-tools/accounts/<accountId>/history.json`；建議唔好用 tmp 做 state dir，避免重啟後「似唔見記錄」。
+- 如你開住 UI 不停調 config / start-stop watchdog，舊版會容易把 order 記錄「頂走」；新版已改為優先清 config/watchdog，保留 order/redeem，並預設保留更多（可用 `POLY_ORDER_HISTORY_MAX` 調整）。
 
 ## 從 Git 取得 / 更新
 
@@ -68,6 +70,12 @@ npm run dev
 - API 預設係 `API_PORT=3001`
 - 前端 proxy 會用 `VITE_API_PORT`（預設亦係 3001）
 - 如果你改過 API port，記得同時改前端 `.env` 入面嘅 `VITE_API_PORT`
+
+### 1.5) 前端見到 404 / AutoTrade / Watchdog 唔 work（其實係 API 唔通）
+
+- 先驗收後端係咪真係起咗（必做）：`curl -sS http://localhost:3001/api/version | head`
+- 再驗收前端 proxy 是否正常：`curl -sS http://localhost:5173/api/group-arb/crypto15m/status | head`
+- 只要上述任何一條唔通，UI 上面所有 `/api/...` 都會壞（表面就會似 404 / 無反應）。
 
 ### 2) API/Trading 授權狀態卡住
 
