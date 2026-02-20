@@ -125,6 +125,7 @@ export default function Dashboard() {
         const acc = res.data?.account;
         await fetchAccounts();
         if (acc?.id) setActiveAccountId(String(acc.id));
+        window.dispatchEvent(new Event('pm_accounts_changed'));
         setCreateAccountName('');
     };
 
@@ -133,6 +134,7 @@ export default function Dashboard() {
         if (!name) return;
         await api.patch(`/accounts/${encodeURIComponent(activeAccountId)}`, { name });
         await fetchAccounts();
+        window.dispatchEvent(new Event('pm_accounts_changed'));
         setRenameAccountName('');
     };
 

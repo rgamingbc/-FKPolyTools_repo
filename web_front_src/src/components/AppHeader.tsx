@@ -1,6 +1,6 @@
 import { Layout, Select, Space, Typography, Tooltip } from 'antd';
 import { LineChartOutlined } from '@ant-design/icons';
-import { useContext, useEffect, useMemo, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import api from '../api/client';
 import { AccountContext } from '../account/AccountContext';
 
@@ -13,28 +13,42 @@ function AppHeader() {
     const [loading, setLoading] = useState(false);
     const [stateDir, setStateDir] = useState<string>('');
 
-    useEffect(() => {
-        let mounted = true;
-        const run = async () => {
-            setLoading(true);
-            try {
-                const res = await api.get('/accounts');
-                const list = Array.isArray(res.data?.accounts) ? res.data.accounts : [];
-                if (mounted) setAccounts(list);
-                const dir = res.data?.stateDir != null ? String(res.data.stateDir) : '';
-                if (mounted) setStateDir(dir);
-            } catch {
-                if (mounted) setAccounts([]);
-                if (mounted) setStateDir('');
-            } finally {
-                if (mounted) setLoading(false);
-            }
-        };
-        run();
-        return () => {
-            mounted = false;
-        };
+    const fetchAccounts = useCallback(async () => {
+        setLoading(true);
+        try {
+            const res = await api.get('/accounts');
+            const list = Array.isArray(res.data?.accounts) ? res.data.accounts : [];
+            setAccounts(list);
+            const dir = res.data?.stateDir != null ? String(res.data.stateDir) : '';
+            setStateDir(dir);
+        } catch {
+            setAccounts([]);
+            setStateDir('');
+        } finally {
+            setLoading(false);
+        }
     }, []);
+
+    useEffect(() => {
+        fetchAccounts();
+    }, [fetchAccounts]);
+
+    useEffect(() => {
+        const onAccountsChanged = () => {
+            fetchAccounts();
+        };
+        window.addEventListener('pm_accounts_changed', onAccountsChanged);
+        return () => {
+            window.removeEventListener('pm_accounts_changed', onAccountsChanged);
+        };
+    }, [fetchAccounts]);
+
+    useEffect(() => {
+        const id = String(activeAccountId || '').trim();
+        if (!id || id === 'default' || id === 'simulation') return;
+        const exists = (accounts || []).some((a: any) => String(a?.id || '').trim() === id);
+        if (!exists) fetchAccounts();
+    }, [activeAccountId, accounts, fetchAccounts]);
 
     const options = useMemo(() => {
         const list = Array.isArray(accounts) ? accounts : [];
@@ -52,8 +66,12 @@ function AppHeader() {
         if (!items.find(x => x.value === 'simulation')) {
             items.push({ value: 'simulation', label: 'Simulation Account (Mock)' });
         }
+        const cur = String(activeAccountId || '').trim();
+        if (cur && !items.find(x => x.value === cur)) {
+            items.unshift({ value: cur, label: cur });
+        }
         return items;
-    }, [accounts]);
+    }, [accounts, activeAccountId]);
 
     return (
         <Header
