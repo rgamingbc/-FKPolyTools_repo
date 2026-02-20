@@ -3,6 +3,8 @@ set -euo pipefail
 
 PUBLIC_IP="${PUBLIC_IP:-}"
 REPO_DIR="${REPO_DIR:-/opt/fktools/FKPolyTools_Repo}"
+GIT_REMOTE_URL="${GIT_REMOTE_URL:-https://github.com/rgamingbc/-FKPolyTools_repo.git}"
+GIT_REF="${GIT_REF:-fix/crypto15m2-autotrade-hedge-20260220}"
 DATA_DIR="${DATA_DIR:-/var/lib/polymarket-tools}"
 API_DIR="${API_DIR:-$REPO_DIR/api_src}"
 WEB_DIR="${WEB_DIR:-$REPO_DIR/web_front_src}"
@@ -28,7 +30,7 @@ run_sudo() {
 }
 
 run_sudo "apt update -y"
-run_sudo "apt install -y nginx git curl build-essential"
+run_sudo "apt install -y nginx git curl build-essential ca-certificates"
 
 if ! command -v node >/dev/null 2>&1; then
   run_sudo "curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash -"
@@ -43,11 +45,22 @@ run_sudo "chown -R ubuntu:ubuntu /opt/fktools || true"
 run_sudo "mkdir -p \"$DATA_DIR\""
 run_sudo "chown -R ubuntu:ubuntu \"$DATA_DIR\" || true"
 
-if [[ ! -d "$REPO_DIR" ]]; then
-  echo "Repo not found at $REPO_DIR"
-  echo "Upload/clone FKPolyTools_Repo to /opt/fktools then rerun."
-  exit 2
+if [[ ! -d "$REPO_DIR/.git" ]]; then
+  echo "Cloning repo to $REPO_DIR"
+  run_sudo "rm -rf \"$REPO_DIR\" || true"
+  run_sudo "git clone \"$GIT_REMOTE_URL\" \"$REPO_DIR\""
 fi
+
+cd "$REPO_DIR"
+echo "Git: $(git log -1 --oneline 2>/dev/null || true)"
+git fetch --all --prune || true
+if git show-ref --verify --quiet "refs/remotes/origin/$GIT_REF"; then
+  git checkout -B "$GIT_REF" "origin/$GIT_REF"
+else
+  git checkout "$GIT_REF"
+fi
+git pull --ff-only || true
+echo "Git (after): $(git log -1 --oneline 2>/dev/null || true)"
 
 if [[ ! -f "$API_DIR/package.json" ]]; then
   echo "API directory not found at $API_DIR"
@@ -105,7 +118,7 @@ server {
   root $WEB_DIR/dist;
   index index.html;
 
-  location /api/group-arb/crypto15m/ws {
+  location ~ ^/api/group-arb/.*/ws$ {
     proxy_pass http://127.0.0.1:$API_PORT;
     proxy_http_version 1.1;
     proxy_set_header Upgrade \$http_upgrade;
