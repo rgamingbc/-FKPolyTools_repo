@@ -3271,8 +3271,27 @@ export class GroupArbitrageScanner {
             const raw = fs.readFileSync(this.orderHistoryPath, 'utf8');
             const parsed = JSON.parse(String(raw || '[]'));
             if (!Array.isArray(parsed)) return;
-            this.orderHistory = parsed.filter((e: any) => !!e && typeof e === 'object').slice(0, 200);
+            const base = parsed.filter((e: any) => !!e && typeof e === 'object');
+            const bakPath = `${this.orderHistoryPath}.bak`;
+            let merged = base;
+            let mergedFromBak = false;
+            try {
+                if (fs.existsSync(bakPath)) {
+                    const rawBak = fs.readFileSync(bakPath, 'utf8');
+                    const parsedBak = JSON.parse(String(rawBak || '[]'));
+                    if (Array.isArray(parsedBak) && parsedBak.length) {
+                        merged = this.mergeOrderHistoryArrays(merged, parsedBak.filter((e: any) => !!e && typeof e === 'object'));
+                        mergedFromBak = merged.length > base.length;
+                    }
+                }
+            } catch {
+            }
+            this.orderHistory = merged;
+            this.trimOrderHistory();
             this.orderHistoryLoadedAt = new Date().toISOString();
+            if (mergedFromBak) {
+                this.schedulePersistOrderHistory();
+            }
         } catch {
         }
     }
@@ -3298,7 +3317,8 @@ export class GroupArbitrageScanner {
         };
 
         try {
-            const payload = JSON.stringify(this.orderHistory.slice(0, 200));
+            this.trimOrderHistory();
+            const payload = JSON.stringify(this.orderHistory);
             writeAtomic(this.orderHistoryPath, payload);
             this.orderHistoryPersistedAt = new Date().toISOString();
             this.orderHistoryPersistLastError = null;
@@ -3316,6 +3336,77 @@ export class GroupArbitrageScanner {
         }, 250);
     }
 
+    private getOrderHistoryMaxEntries(): number {
+        const raw = process.env.POLY_ORDER_HISTORY_MAX ?? process.env.POLY_HISTORY_MAX;
+        const n = raw != null ? Number(raw) : NaN;
+        const v = Number.isFinite(n) ? Math.floor(n) : 5000;
+        return Math.max(300, Math.min(100000, v));
+    }
+
+    private orderHistoryTier(action: any): number {
+        const a = String(action || '');
+        if (!a) return 3;
+        if (a === 'redeem') return 1;
+        if (a.includes('stoploss')) return 0;
+        if (a.endsWith('_order') || a === 'follow_order' || a === 'manual_order') return 0;
+        if (a.includes('_config_') || a.endsWith('_config_update')) return 5;
+        if (a.includes('watchdog')) return 4;
+        return 3;
+    }
+
+    private orderHistoryDedupeKey(e: any): string {
+        const id = e?.id != null ? String(e.id) : '';
+        const action = e?.action != null ? String(e.action) : '';
+        const marketId = e?.marketId != null ? String(e.marketId) : (e?.conditionId != null ? String(e.conditionId) : '');
+        const orderId = e?.orderId != null ? String(e.orderId) : (e?.id != null ? '' : '');
+        const txHash = e?.txHash != null ? String(e.txHash) : '';
+        return `${id}|${action}|${marketId}|${orderId}|${txHash}`;
+    }
+
+    private mergeOrderHistoryArrays(a: any[], b: any[]): any[] {
+        const out: any[] = [];
+        const seen = new Set<string>();
+        for (const e of (Array.isArray(a) ? a : [])) {
+            const k = this.orderHistoryDedupeKey(e);
+            if (seen.has(k)) continue;
+            seen.add(k);
+            out.push(e);
+        }
+        for (const e of (Array.isArray(b) ? b : [])) {
+            const k = this.orderHistoryDedupeKey(e);
+            if (seen.has(k)) continue;
+            seen.add(k);
+            out.push(e);
+        }
+        out.sort((x: any, y: any) => {
+            const tx = Date.parse(String(x?.timestamp || '')) || 0;
+            const ty = Date.parse(String(y?.timestamp || '')) || 0;
+            if (tx !== ty) return ty - tx;
+            const ix = Number(x?.id) || 0;
+            const iy = Number(y?.id) || 0;
+            return iy - ix;
+        });
+        return out;
+    }
+
+    private trimOrderHistory() {
+        const max = this.getOrderHistoryMaxEntries();
+        if (!Array.isArray(this.orderHistory)) this.orderHistory = [];
+        if (this.orderHistory.length <= max) return;
+        const arr = this.orderHistory;
+        for (const tier of [5, 4, 3, 2, 1]) {
+            for (let i = arr.length - 1; i >= 0 && arr.length > max; i--) {
+                const e = arr[i];
+                const t = this.orderHistoryTier(e?.action);
+                if (t === tier) arr.splice(i, 1);
+            }
+            if (arr.length <= max) break;
+        }
+        if (arr.length > max) {
+            arr.length = max;
+        }
+    }
+
     private recordAutoConfigEvent(strategy: 'crypto15m' | 'crypto15m2' | 'cryptoall2' | 'cryptoall', event: 'start' | 'stop', config: any) {
         const action = `${strategy}_config_${event}`;
         this.orderHistory.unshift({
@@ -3326,7 +3417,7 @@ export class GroupArbitrageScanner {
             strategy,
             config,
         });
-        if (this.orderHistory.length > 300) this.orderHistory.pop();
+        this.trimOrderHistory();
         this.schedulePersistOrderHistory();
     }
 
@@ -3340,7 +3431,7 @@ export class GroupArbitrageScanner {
             strategy,
             config: payload,
         });
-        if (this.orderHistory.length > 300) this.orderHistory.pop();
+        this.trimOrderHistory();
         this.schedulePersistOrderHistory();
     }
 
@@ -5753,7 +5844,7 @@ export class GroupArbitrageScanner {
                         claimableCountAfter,
                         results: submittedResults,
                     });
-                    if (this.orderHistory.length > 100) this.orderHistory.pop();
+                    this.trimOrderHistory();
                     this.schedulePersistOrderHistory();
                 }
             } finally {
@@ -8463,7 +8554,9 @@ export class GroupArbitrageScanner {
         const requestLimit = Math.max(limit, 40);
         const minProb = options?.minProb != null ? Number(options.minProb) : this.crypto15m2AutoConfig.minProb;
         const expiresWithinSec = options?.expiresWithinSec != null ? Number(options.expiresWithinSec) : this.crypto15m2AutoConfig.expiresWithinSec;
-        const expiresWithinSecByTimeframe = this.crypto15m2AutoConfig.expiresWithinSecByTimeframe || { '5m': expiresWithinSec, '15m': expiresWithinSec };
+        const expiresWithinSecByTimeframe = options?.expiresWithinSec != null
+            ? { '5m': expiresWithinSec, '15m': expiresWithinSec }
+            : (this.crypto15m2AutoConfig.expiresWithinSecByTimeframe || { '5m': expiresWithinSec, '15m': expiresWithinSec });
         const expires15m = Math.max(5, Math.floor(Number(expiresWithinSecByTimeframe['15m'] ?? expiresWithinSec)));
         const expires5m = Math.max(5, Math.floor(Number(expiresWithinSecByTimeframe['5m'] ?? expiresWithinSec)));
 
@@ -9442,7 +9535,7 @@ export class GroupArbitrageScanner {
             action: payload?.action || 'crypto15m_hedge_event',
             ...payload,
         });
-        if (this.orderHistory.length > 300) this.orderHistory.pop();
+        this.trimOrderHistory();
         this.schedulePersistOrderHistory();
     }
 
@@ -10843,7 +10936,7 @@ export class GroupArbitrageScanner {
                     amountUsd,
                     results: [{ success: false, orderId: null, tokenId, outcome, conditionId, orderStatus, errorMsg: extra != null ? String(extra) : '' }],
                 });
-                if (this.orderHistory.length > 300) this.orderHistory.pop();
+                this.trimOrderHistory();
                 this.schedulePersistOrderHistory();
             } catch {
             }
@@ -11004,7 +11097,7 @@ export class GroupArbitrageScanner {
             results: [{ ...order, orderStatus, tokenId, outcome, conditionId }],
         };
         this.orderHistory.unshift(entry);
-        if (this.orderHistory.length > 100) this.orderHistory.pop();
+        this.trimOrderHistory();
         this.schedulePersistOrderHistory();
 
         if (order?.success === true && splitPlan && splitPlan.dueLeg) {
@@ -11683,6 +11776,45 @@ export class GroupArbitrageScanner {
             }
             return { did: true, sim: simEnabled === true, res, order, remainingSec, profitCents, bufferCents, entryPrice, p2Max, bestAsk, bestBid: Number.isFinite(bestBid) ? bestBid : null, spreadCents, tradableShares, sharesToBuy, amountUsd, filledSize, updatedFilled, done, panicNow };
         };
+        const attemptUnwind = async (active: any, remainingSecOverride?: number | null) => {
+            const now = Date.now();
+            const expiresAtMs = active?.expiresAtMs != null ? Number(active.expiresAtMs) : NaN;
+            const remainingSec = remainingSecOverride != null ? Number(remainingSecOverride) : (Number.isFinite(expiresAtMs) ? Math.floor((expiresAtMs - now) / 1000) : null);
+            const entryTokenId = String(active?.entryTokenId || '').trim();
+            if (!entryTokenId) return { did: false, reason: 'missing_entry_token', remainingSec };
+            const entryPrice = active?.entryPrice != null ? Number(active.entryPrice) : NaN;
+            const entryShares = active?.entryFilledShares != null ? Number(active.entryFilledShares) : NaN;
+            const hedgeFilledShares = active?.hedgeFilledShares != null ? Number(active.hedgeFilledShares) : 0;
+            const remainingShares = (Number.isFinite(entryShares) ? entryShares : 0) - (Number.isFinite(hedgeFilledShares) ? hedgeFilledShares : 0);
+            if (!(remainingShares > 0.01)) return { did: false, reason: 'unwind_not_needed', remainingSec };
+            const books = await this.fetchClobBooks([entryTokenId]);
+            const book = books && books.length ? books[0] : null;
+            const best = computeBest(book);
+            const bestBid = best.bestBid != null ? Number(best.bestBid) : NaN;
+            if (!Number.isFinite(bestBid) || !(bestBid > 0)) return { did: false, reason: 'no_bids', remainingSec };
+            const p1 = Math.max(0.001, Math.min(0.999, bestBid));
+            const p2 = Math.max(0.001, Math.min(0.999, bestBid - 0.01));
+            const p3 = Math.max(0.001, Math.min(0.999, bestBid - 0.02));
+            const sellChunk = remainingShares;
+            const fillPrice = p1;
+            if (simEnabled && simState) {
+                const cur = Number(simState.positionsByTokenId[entryTokenId] || 0);
+                simState.positionsByTokenId[entryTokenId] = Math.max(0, cur - sellChunk);
+                simState.cashUsdc = Number(simState.cashUsdc) + sellChunk * fillPrice;
+                this.crypto15mHedgeSimState = { ...simState, positionsByTokenId: { ...simState.positionsByTokenId } };
+                this.persistCrypto15mHedgeSimToFile();
+                return { did: true, sim: true, remainingSec, entryPrice: Number.isFinite(entryPrice) ? entryPrice : null, bestBid, sellChunk, res: { success: true, orderId: `SIM-UNWIND-${Date.now()}` }, order: { status: 'MATCHED', filledSize: sellChunk } };
+            }
+            const attempt1 = await this.tradingClient.createMarketOrder({ tokenId: entryTokenId, side: 'SELL', amount: sellChunk, price: p1, orderType: 'FAK' });
+            const attempt2 = attempt1?.success ? null : await this.tradingClient.createMarketOrder({ tokenId: entryTokenId, side: 'SELL', amount: sellChunk, price: p2, orderType: 'FAK' });
+            const attempt3 = (attempt2?.success || attempt1?.success) ? null : await this.tradingClient.createMarketOrder({ tokenId: entryTokenId, side: 'SELL', amount: sellChunk, price: p3, orderType: 'FAK' });
+            const res = attempt1?.success ? attempt1 : (attempt2?.success ? attempt2 : attempt3);
+            const orderId = res?.orderId != null ? String(res.orderId) : null;
+            const order = orderId ? await waitForOrderFill(orderId) : null;
+            const filledSize = order?.filledSize != null ? Number(order.filledSize) : null;
+            const did = res?.success === true;
+            return { did, sim: false, remainingSec, entryPrice: Number.isFinite(entryPrice) ? entryPrice : null, bestBid, sellChunk, res, order, filledSize };
+        };
 
         try {
             cleanupLocks();
@@ -11722,6 +11854,37 @@ export class GroupArbitrageScanner {
                             panicNow: r?.panicNow === true,
                             errorMsg: r?.error ?? null,
                         });
+                    }
+                }
+                if (phase === 'waiting_hedge' && r?.did !== true) {
+                    const rem = r?.remainingSec != null ? Number(r.remainingSec) : null;
+                    const unwindAttemptedAt = active?.unwindAttemptedAt != null ? Number(active.unwindAttemptedAt) : null;
+                    if (unwindAttemptedAt == null && rem != null && Number.isFinite(rem) && rem <= Number(this.crypto15mHedgeAutoConfig.minSecToHedge)) {
+                        const u: any = await attemptUnwind(active, rem).catch((e: any) => ({ did: false, reason: 'unwind_error', error: e?.message || String(e) }));
+                        this.crypto15mHedgeLastDecision = { at: new Date().toISOString(), type: 'unwind', symbol, conditionId: cid || null, ...u };
+                        const next = { ...active, unwindAttemptedAt: Date.now(), unwindResult: u, phase: u?.did === true ? 'unwound' : String(active?.phase || 'waiting_hedge') };
+                        this.crypto15mHedgeActivesBySymbol.set(symbol, next);
+                        if (cid) this.crypto15mHedgeTrackedByCondition.set(cid, next);
+                        this.recordCrypto15mHedgeEvent({
+                            action: 'crypto15m_hedge_unwind',
+                            sim: simEnabled === true,
+                            symbol,
+                            conditionId: cid,
+                            tokenId: String(active?.entryTokenId || ''),
+                            outcome: String(active?.entryOutcome || ''),
+                            remainingSec: rem,
+                            entryPrice: u?.entryPrice ?? active?.entryPrice ?? null,
+                            bestBid: u?.bestBid ?? null,
+                            sellChunk: u?.sellChunk ?? null,
+                            orderId: u?.res?.orderId ?? null,
+                            success: u?.res?.success ?? null,
+                            errorMsg: u?.res?.errorMsg ?? u?.error ?? null,
+                            filledSize: u?.filledSize ?? null,
+                            phase: next.phase,
+                        });
+                        if (u?.did === true) {
+                            this.crypto15mHedgeActivesBySymbol.delete(symbol);
+                        }
                     }
                 }
                 if (r?.did === true) {
@@ -11839,15 +12002,13 @@ export class GroupArbitrageScanner {
                 const profitCents0 = this.computeCrypto15mHedgeEffectiveProfitCents(Number.isFinite(remainingSec0) ? remainingSec0 : null, this.crypto15mHedgeAutoConfig);
                 const bufferCents0 = Number(this.crypto15mHedgeAutoConfig.bufferCents);
                 const p2MaxCheck = Math.min(0.999, 1 - (profitCents0 / 100) - (bufferCents0 / 100) - bestAsk);
-                if (stateClass === 'trend_up' || stateClass === 'trend_down') {
-                    const hedgeBooks0 = await this.fetchClobBooks([hedgeTokenId]);
-                    const hedgeBest0 = computeBest(hedgeBooks0 && hedgeBooks0.length ? hedgeBooks0[0] : null);
-                    const hedgeBestAsk0 = hedgeBest0.bestAsk != null ? Number(hedgeBest0.bestAsk) : NaN;
-                    if (!Number.isFinite(p2MaxCheck) || !(p2MaxCheck > 0) || (Number.isFinite(hedgeBestAsk0) && hedgeBestAsk0 > p2MaxCheck)) {
-                        this.crypto15mHedgeLastDecision = { at: new Date().toISOString(), type: 'entry', symbol, conditionId: cid, reason: 'p2max_unviable', bestAsk, hedgeBestAsk: Number.isFinite(hedgeBestAsk0) ? hedgeBestAsk0 : null, p2MaxCheck };
-                        this.crypto15mHedgeOrderLocks.set(orderLockKey, { atMs: Date.now(), symbol, expiresAtMs, conditionId: cid, status: 'failed' });
-                        continue;
-                    }
+                const hedgeBooks0 = await this.fetchClobBooks([hedgeTokenId]);
+                const hedgeBest0 = computeBest(hedgeBooks0 && hedgeBooks0.length ? hedgeBooks0[0] : null);
+                const hedgeBestAsk0 = hedgeBest0.bestAsk != null ? Number(hedgeBest0.bestAsk) : NaN;
+                if (!Number.isFinite(p2MaxCheck) || !(p2MaxCheck > 0) || (Number.isFinite(hedgeBestAsk0) && hedgeBestAsk0 > p2MaxCheck)) {
+                    this.crypto15mHedgeLastDecision = { at: new Date().toISOString(), type: 'entry', symbol, conditionId: cid, reason: 'p2max_unviable', bestAsk, hedgeBestAsk: Number.isFinite(hedgeBestAsk0) ? hedgeBestAsk0 : null, p2MaxCheck };
+                    this.crypto15mHedgeOrderLocks.set(orderLockKey, { atMs: Date.now(), symbol, expiresAtMs, conditionId: cid, status: 'failed' });
+                    continue;
                 }
                 // Fix: Strict validation for bestAsk to prevent 'BUY 0' signals
                 if (!Number.isFinite(bestAsk) || bestAsk <= 0.0001) {
@@ -11947,6 +12108,33 @@ export class GroupArbitrageScanner {
                     secondsToExpire: pick.secondsToExpire ?? null,
                     phase: active.phase,
                 });
+                if (active.phase === 'waiting_hedge') {
+                    const r1: any = await attemptHedge(active).catch((e: any) => ({ did: false, reason: 'hedge_error', error: e?.message || String(e) }));
+                    this.crypto15mHedgeLastDecision = { at: new Date().toISOString(), type: 'hedge', symbol, conditionId: cid || null, ...r1 };
+                    if (r1?.did === true) {
+                        const next = { ...active, phase: r1.done ? 'hedged' : 'hedging', hedgeFilledShares: r1.updatedFilled, hedgeP2Max: r1.p2Max, hedgeLastAsk: r1.bestAsk, hedgeLastAttemptAt: new Date().toISOString() };
+                        this.crypto15mHedgeActivesBySymbol.set(symbol, next);
+                        if (cid) this.crypto15mHedgeTrackedByCondition.set(cid, next);
+                        this.crypto15mHedgeLastOrderAttempt = { at: new Date().toISOString(), type: 'hedge', symbol, conditionId: cid, orderId: r1?.res?.orderId ?? null, success: r1?.res?.success ?? null, errorMsg: r1?.res?.errorMsg ?? null, filledSize: r1?.filledSize ?? null, p2Max: r1?.p2Max ?? null, bestAsk: r1?.bestAsk ?? null };
+                        this.recordCrypto15mHedgeEvent({
+                            action: 'crypto15m_hedge_buy',
+                            sim: simEnabled === true,
+                            symbol,
+                            conditionId: cid,
+                            tokenId: String(next.hedgeTokenId || ''),
+                            outcome: String(next.hedgeOutcome || ''),
+                            bestAsk: r1?.bestAsk ?? null,
+                            p2Max: r1?.p2Max ?? null,
+                            amountUsd: r1?.amountUsd ?? null,
+                            sharesTarget: r1?.sharesToBuy ?? null,
+                            filledSize: r1?.filledSize ?? null,
+                            orderId: r1?.res?.orderId ?? null,
+                            success: r1?.res?.success ?? null,
+                            errorMsg: r1?.res?.errorMsg ?? null,
+                            phase: next.phase,
+                        });
+                    }
+                }
             }
         } catch (e: any) {
             this.crypto15mHedgeLastError = e?.message || String(e);
@@ -12160,10 +12348,16 @@ export class GroupArbitrageScanner {
         const adaptiveDeltaEnabled = config?.adaptiveDeltaEnabled != null ? !!config.adaptiveDeltaEnabled : this.crypto15m2AutoConfig.adaptiveDeltaEnabled;
         const adaptiveDeltaBigMoveMultiplierRaw = config?.adaptiveDeltaBigMoveMultiplier != null ? Number(config.adaptiveDeltaBigMoveMultiplier) : this.crypto15m2AutoConfig.adaptiveDeltaBigMoveMultiplier;
         const adaptiveDeltaRevertNoBuyCountRaw = config?.adaptiveDeltaRevertNoBuyCount != null ? Number(config.adaptiveDeltaRevertNoBuyCount) : this.crypto15m2AutoConfig.adaptiveDeltaRevertNoBuyCount;
-        const expiresWithinSecByTimeframeInput =
+        const expiresWithinSecByTimeframeInputRaw =
             (config as any)?.expiresWithinSecByTimeframe && typeof (config as any).expiresWithinSecByTimeframe === 'object'
                 ? (config as any).expiresWithinSecByTimeframe
                 : null;
+        const expiresWithinSecByTimeframeInput =
+            expiresWithinSecByTimeframeInputRaw != null
+                ? expiresWithinSecByTimeframeInputRaw
+                : (config as any)?.expiresWithinSec != null
+                    ? { '5m': expiresWithinSec, '15m': expiresWithinSec }
+                    : null;
         const prevExpByTf = this.crypto15m2AutoConfig.expiresWithinSecByTimeframe || { '5m': this.crypto15m2AutoConfig.expiresWithinSec, '15m': this.crypto15m2AutoConfig.expiresWithinSec };
         const expiresWithinSecByTimeframe = (['5m', '15m'] as const).reduce((acc: any, tf) => {
             const raw = expiresWithinSecByTimeframeInput && (expiresWithinSecByTimeframeInput as any)[tf] != null ? Number((expiresWithinSecByTimeframeInput as any)[tf]) : Number(prevExpByTf[tf] ?? expiresWithinSec);
@@ -12248,10 +12442,12 @@ export class GroupArbitrageScanner {
                 const minProbRaw = options?.minProb != null ? Number(options.minProb) : prevConfig.minProb;
                 const expiresWithinSecRaw = options?.expiresWithinSec != null ? Number(options.expiresWithinSec) : prevConfig.expiresWithinSec;
                 const amountUsdRaw = options?.amountUsd != null ? Number(options.amountUsd) : prevConfig.amountUsd;
+                const exp = Math.max(5, Math.floor(Number.isFinite(expiresWithinSecRaw) ? expiresWithinSecRaw : prevConfig.expiresWithinSec));
                 this.crypto15m2AutoConfig = {
                     ...prevConfig,
                     minProb: Math.max(0, Math.min(1, Number.isFinite(minProbRaw) ? minProbRaw : prevConfig.minProb)),
-                    expiresWithinSec: Math.max(5, Math.floor(Number.isFinite(expiresWithinSecRaw) ? expiresWithinSecRaw : prevConfig.expiresWithinSec)),
+                    expiresWithinSec: exp,
+                    expiresWithinSecByTimeframe: { '5m': exp, '15m': exp },
                     amountUsd: Math.max(1, Number.isFinite(amountUsdRaw) ? amountUsdRaw : prevConfig.amountUsd),
                 };
             }
@@ -13225,13 +13421,26 @@ export class GroupArbitrageScanner {
                             orderType: 'FAK',
                         });
                         const orderRoundtripMs = Math.max(0, Date.now() - startedAtMs);
-                        const out = { ...res, orderRoundtripMs, attemptedUsd: attemptUsd, attemptNo };
-                        attempts.push(out);
+                        const orderId = res?.orderId != null
+                            ? String(res.orderId)
+                            : (res?.orderID != null ? String(res.orderID) : (res?.id != null ? String(res.id) : null));
+                        const out = {
+                            success: res?.success === true,
+                            orderId,
+                            orderStatus: res?.orderStatus ?? res?.status ?? null,
+                            filledSize: res?.filledSize ?? null,
+                            price: res?.price ?? null,
+                            errorMsg: res?.errorMsg ?? res?.errorMessage ?? res?.message ?? res?.error ?? null,
+                            orderRoundtripMs,
+                            attemptedUsd: attemptUsd,
+                            attemptNo,
+                        };
+                        attempts.push({ ...out });
                         return out;
                     };
                     const a1 = await runAttempt(1, amountUsdFinal);
                     ord = a1;
-                    const orderId1 = a1?.orderId != null ? String(a1.orderId) : (a1?.orderID != null ? String(a1.orderID) : (a1?.id != null ? String(a1.id) : null));
+                    const orderId1 = a1?.orderId != null ? String(a1.orderId) : null;
                     const probe1 = await this.probeRecentBuyState({ conditionId, tokenId, orderId: orderId1, maxWaitMs: 900 }).catch(() => ({ orderId: orderId1, filledSize: null, filledUsd: null, hasOpen: false, openOrderId: null, openRemainingUsd: null } as any));
                     (a1 as any).verified = true;
                     (a1 as any).verifiedOrderId = probe1?.orderId ?? null;
@@ -13253,7 +13462,7 @@ export class GroupArbitrageScanner {
                         const attemptUsd2 = Math.max(1, Math.min(remainingUsd1, cap2));
                         const a2 = await runAttempt(2, attemptUsd2);
                         ord = a2;
-                        const orderId2 = a2?.orderId != null ? String(a2.orderId) : (a2?.orderID != null ? String(a2.orderID) : (a2?.id != null ? String(a2.id) : null));
+                        const orderId2 = a2?.orderId != null ? String(a2.orderId) : null;
                         const probe2 = await this.probeRecentBuyState({ conditionId, tokenId, orderId: orderId2, maxWaitMs: 900 }).catch(() => ({ orderId: orderId2, filledSize: null, filledUsd: null, hasOpen: false, openOrderId: null, openRemainingUsd: null } as any));
                         (a2 as any).verified = true;
                         (a2 as any).verifiedOrderId = probe2?.orderId ?? null;
@@ -13347,7 +13556,7 @@ export class GroupArbitrageScanner {
         } catch {
         }
         this.orderHistory.unshift(entry);
-        if (this.orderHistory.length > 100) this.orderHistory.pop();
+        this.trimOrderHistory();
         this.schedulePersistOrderHistory();
 
         const active = {
@@ -13422,7 +13631,24 @@ export class GroupArbitrageScanner {
             }
         }
 
-        return { success: true, active, order };
+        const orderSafe = order && typeof order === 'object'
+            ? (() => {
+                const o: any = { ...(order as any) };
+                if (o.attempts != null) delete o.attempts;
+                if (o.sweep && typeof o.sweep === 'object') {
+                    const s: any = o.sweep;
+                    o.sweep = {
+                        ok: s?.ok ?? null,
+                        summary: s?.summary ?? null,
+                        orders: Array.isArray(s?.orders)
+                            ? s.orders.map((x: any) => ({ success: x?.success === true, orderId: x?.orderId ?? null, orderStatus: x?.orderStatus ?? null, errorMsg: x?.errorMsg ?? null }))
+                            : null,
+                    };
+                }
+                return o;
+            })()
+            : order;
+        return { success: true, active, order: orderSafe };
     }
 
     async placeCrypto15m2Order(params: { conditionId: string; timeframe?: '5m' | '15m' | string; outcomeIndex?: number; chosenTokenId?: string; amountUsd?: number; minPrice?: number; force?: boolean; source?: 'auto' | 'semi'; symbol?: string; endDate?: string; secondsToExpire?: number; chosenPrice?: number; trendEnabled?: boolean; trendMinutes?: number; stoplossEnabled?: boolean; stoplossCut1DropCents?: number; stoplossCut1SellPct?: number; stoplossCut2DropCents?: number; stoplossCut2SellPct?: number; stoplossMinSecToExit?: number }) {
@@ -13982,7 +14208,7 @@ export class GroupArbitrageScanner {
                 : [{ ...order, tokenId, outcome, conditionId }],
         };
         this.orderHistory.unshift(entry);
-        if (this.orderHistory.length > 300) this.orderHistory.pop();
+        this.trimOrderHistory();
         this.schedulePersistOrderHistory();
 
         if (sweepActive && sweepState) {
@@ -14088,7 +14314,7 @@ export class GroupArbitrageScanner {
             results,
         };
         this.orderHistory.unshift(entry);
-        if (this.orderHistory.length > 100) this.orderHistory.pop();
+        this.trimOrderHistory();
         this.schedulePersistOrderHistory();
 
         const okCount = results.filter(r => r.success).length;
@@ -14292,7 +14518,7 @@ export class GroupArbitrageScanner {
                 claimableCountAfter,
                 results,
             });
-            if (this.orderHistory.length > 100) this.orderHistory.pop();
+            this.trimOrderHistory();
             this.schedulePersistOrderHistory();
         }
 
@@ -14758,7 +14984,12 @@ export class GroupArbitrageScanner {
     private async refreshCryptoAllMarketSnapshot(params: { symbols: string[]; timeframes: Array<'5m' | '15m' | '1h' | '4h' | '1d'>; limit: number }) {
         const symbols = params.symbols.length ? params.symbols.slice() : ['BTC', 'ETH', 'SOL', 'XRP'];
         const timeframesInput: Array<'5m' | '15m' | '1h' | '4h' | '1d'> = params.timeframes.length ? params.timeframes.slice() : ['15m'];
-        const timeframes: Array<'5m' | '15m' | '1h' | '4h' | '1d'> = timeframesInput.includes('15m') ? ['15m'] : ['15m'];
+        const timeframesSet = new Set<Array<'5m' | '15m' | '1h' | '4h' | '1d'>[number]>();
+        for (const tf of timeframesInput) {
+            const t = String(tf || '').toLowerCase() as any;
+            if (t === '5m' || t === '15m' || t === '1h' || t === '4h' || t === '1d') timeframesSet.add(t);
+        }
+        const timeframes: Array<'5m' | '15m' | '1h' | '4h' | '1d'> = timeframesSet.size ? Array.from(timeframesSet) : ['15m'];
         const limit = Math.max(1, Math.floor(Number(params.limit) || 20));
         const key = JSON.stringify({ symbols: symbols.slice().sort(), timeframes: timeframes.slice().sort(), limit });
         if (this.cryptoAllMarketInFlight) return this.cryptoAllMarketInFlight;
@@ -16454,7 +16685,7 @@ export class GroupArbitrageScanner {
                         sellAmount,
                         result: { success: false, skipped: true, error: `dust_size:${sellAmount}` },
                     });
-                    if (this.orderHistory.length > 300) this.orderHistory.pop();
+                    this.trimOrderHistory();
                     this.schedulePersistOrderHistory();
                     continue;
                 }
@@ -16547,7 +16778,7 @@ export class GroupArbitrageScanner {
                 sellAmount,
                 result: sellResult,
             });
-            if (this.orderHistory.length > 300) this.orderHistory.pop();
+            this.trimOrderHistory();
             this.schedulePersistOrderHistory();
         }
     }
@@ -17314,7 +17545,7 @@ export class GroupArbitrageScanner {
                 action: 'manual_exit',
                 result: { success: false, error: 'No filled leg detected', cancelResults }
             });
-            if (this.orderHistory.length > 100) this.orderHistory.pop();
+            this.trimOrderHistory();
             this.schedulePersistOrderHistory();
             return { success: false, error: 'No filled leg detected', cancelResults };
         }
@@ -17362,7 +17593,7 @@ export class GroupArbitrageScanner {
                 mid,
                 result: fallbackLimit?.success ? { ...fallbackLimit, method: 'limit_best_bid' } : { ...sell, method: attempt1?.success ? 'market_fak' : 'market_fak_with_price', fallbackLimit }
             });
-            if (this.orderHistory.length > 50) this.orderHistory.pop();
+            this.trimOrderHistory();
             this.schedulePersistOrderHistory();
 
             if (sell?.success || fallbackLimit?.success) pos.status = 'exited';
@@ -17493,7 +17724,7 @@ export class GroupArbitrageScanner {
         };
 
         this.orderHistory.unshift(historyEntry);
-        if (this.orderHistory.length > 100) this.orderHistory.pop();
+        this.trimOrderHistory();
         this.schedulePersistOrderHistory();
         this.schedulePersistOrderHistory();
 
@@ -17767,7 +17998,7 @@ export class GroupArbitrageScanner {
         
         // Add to history (limit to 50)
         this.orderHistory.unshift(historyEntry);
-        if (this.orderHistory.length > 100) this.orderHistory.pop();
+        this.trimOrderHistory();
         this.schedulePersistOrderHistory();
 
         return { success: true, results, openOrders };
@@ -17886,7 +18117,7 @@ export class GroupArbitrageScanner {
         };
 
         this.orderHistory.unshift(historyEntry);
-        if (this.orderHistory.length > 100) this.orderHistory.pop();
+        this.trimOrderHistory();
 
         const yes = results.find((r: any) => String(r?.outcome ?? '').toLowerCase() === 'yes' && r.orderId);
         const no = results.find((r: any) => String(r?.outcome ?? '').toLowerCase() === 'no' && r.orderId);
@@ -17961,7 +18192,7 @@ export class GroupArbitrageScanner {
                             action: 'timeout_cancel',
                             details: { oneLegTimeoutMinutes: pos.settings.oneLegTimeoutMinutes }
                         });
-                        if (this.orderHistory.length > 100) this.orderHistory.pop();
+                        this.trimOrderHistory();
                         this.schedulePersistOrderHistory();
                     }
                     continue;
@@ -18006,7 +18237,7 @@ export class GroupArbitrageScanner {
                                         leg: otherLeg.outcome,
                                         result: hedge
                                     });
-                                    if (this.orderHistory.length > 100) this.orderHistory.pop();
+                                    this.trimOrderHistory();
                                     this.schedulePersistOrderHistory();
                                 }
                             }
@@ -18090,7 +18321,7 @@ export class GroupArbitrageScanner {
                             spreadCents,
                             result: fallbackLimit?.success ? { ...fallbackLimit, method: 'limit_best_bid' } : { ...sell, method: attempt1?.success ? 'market_fak' : 'market_fak_with_price', fallbackLimit }
                         });
-                        if (this.orderHistory.length > 100) this.orderHistory.pop();
+                        this.trimOrderHistory();
                         this.schedulePersistOrderHistory();
                         if (sell?.success || fallbackLimit?.success) {
                             pos.status = 'exited';

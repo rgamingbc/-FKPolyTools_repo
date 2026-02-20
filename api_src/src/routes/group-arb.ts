@@ -2010,7 +2010,16 @@ export const groupArbRoutes: FastifyPluginAsync = async (fastify) => {
                     force: b.force === true,
                     source: 'semi',
                 });
-                return r;
+                const seen = new WeakSet<object>();
+                const safe = JSON.parse(JSON.stringify(r, (_k, v) => {
+                    if (typeof v === 'bigint') return v.toString();
+                    if (v && typeof v === 'object') {
+                        if (seen.has(v)) return undefined;
+                        seen.add(v);
+                    }
+                    return v;
+                }));
+                return safe;
             } catch (err: any) {
                 return reply.status(500).send({ error: err.message });
             }
